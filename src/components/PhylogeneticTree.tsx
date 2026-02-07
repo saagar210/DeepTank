@@ -65,7 +65,7 @@ export function PhylogeneticTree({ genomeId, onClose, onSelectFish }: Props) {
       byDepth.set(n.depth, arr);
     }
 
-    const maxDepth = Math.max(...nodes.map((n) => n.depth));
+    const maxDepth = nodes.reduce((m, n) => (n.depth > m ? n.depth : m), 0);
     const nodeRadius = 16;
     const levelHeight = h / (maxDepth + 2);
 
@@ -139,7 +139,7 @@ export function PhylogeneticTree({ genomeId, onClose, onSelectFish }: Props) {
 
       // Recompute positions to find clicked node
       const h = canvas.height;
-      const maxDepth = Math.max(...nodes.map((n) => n.depth));
+      const maxDepth = nodes.reduce((m, n) => (n.depth > m ? n.depth : m), 0);
       const levelHeight = h / (maxDepth + 2);
 
       const byDepth = new Map<number, LineageNode[]>();

@@ -60,11 +60,12 @@ export function ReplayControls({ onClose, onPauseSimulation }: Props) {
     const interval = setInterval(() => {
       if (!playRef.current) return;
       setIndex((prev) => {
-        if (prev >= snapshots.length - 1) {
+        const next = prev + speedRef.current;
+        if (next >= snapshots.length - 1) {
           setPlaying(false);
-          return prev;
+          return snapshots.length - 1;
         }
-        return prev + speedRef.current;
+        return next;
       });
     }, 200);
     return () => clearInterval(interval);

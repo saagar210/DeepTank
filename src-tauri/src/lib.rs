@@ -261,9 +261,12 @@ fn get_events(db: tauri::State<'_, Mutex<Option<rusqlite::Connection>>>, event_t
     let lim = limit.unwrap_or(100) as i64;
     let mut results = Vec::new();
     let query = if let Some(ref etype) = event_type {
-        let mut stmt = conn.prepare(
+        let mut stmt = match conn.prepare(
             "SELECT tick, event_type, subject_fish_id, subject_species_id, description, timestamp FROM events WHERE event_type = ?1 ORDER BY id DESC LIMIT ?2"
-        ).unwrap();
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
         let rows = stmt.query_map(rusqlite::params![etype, lim], |row| {
             Ok(serde_json::json!({
                 "tick": row.get::<_, i64>(0).unwrap_or(0),
@@ -279,9 +282,12 @@ fn get_events(db: tauri::State<'_, Mutex<Option<rusqlite::Connection>>>, event_t
         }
         results
     } else {
-        let mut stmt = conn.prepare(
+        let mut stmt = match conn.prepare(
             "SELECT tick, event_type, subject_fish_id, subject_species_id, description, timestamp FROM events ORDER BY id DESC LIMIT ?1"
-        ).unwrap();
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
         let rows = stmt.query_map(rusqlite::params![lim], |row| {
             Ok(serde_json::json!({
                 "tick": row.get::<_, i64>(0).unwrap_or(0),

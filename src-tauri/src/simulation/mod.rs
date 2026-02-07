@@ -214,12 +214,4 @@ impl SimulationState {
         self.genomes.get(&genome_id)
     }
 
-    /// Get all genomes the frontend doesn't have yet
-    #[allow(dead_code)]
-    pub fn get_new_genomes(&self, known_ids: &[u32]) -> Vec<&FishGenome> {
-        self.genomes
-            .values()
-            .filter(|g| !known_ids.contains(&g.id))
-            .collect()
-    }
 }

@@ -114,11 +114,6 @@ impl Fish {
         self.age as f32 / max_age as f32
     }
 
-    #[allow(dead_code)]
-    pub fn max_lifespan(&self, genome: &FishGenome, base_lifespan: u32) -> u32 {
-        (base_lifespan as f32 * genome.lifespan_factor) as u32
-    }
-
     pub fn behavior_schooling_multiplier(&self) -> f32 {
         match self.behavior {
             BehaviorState::Foraging => 0.3,

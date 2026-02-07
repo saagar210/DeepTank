@@ -430,16 +430,21 @@ pub fn save_snapshot(
     deaths: u32,
 ) -> Result<()> {
     let (avg_hue, avg_speed, avg_size, avg_aggression, avg_metabolism) = if !fish.is_empty() {
-        let mut h = 0.0_f32; let mut sp = 0.0_f32; let mut sz = 0.0_f32; let mut ag = 0.0_f32; let mut met = 0.0_f32;
+        let mut sin_sum = 0.0_f32; let mut cos_sum = 0.0_f32;
+        let mut sp = 0.0_f32; let mut sz = 0.0_f32; let mut ag = 0.0_f32; let mut met = 0.0_f32;
         let mut count = 0_u32;
         for f in fish {
             if let Some(g) = genomes.get(&f.genome_id) {
-                h += g.base_hue; sp += g.speed; sz += g.body_length; ag += g.aggression; met += g.metabolism;
+                let rad = g.base_hue.to_radians();
+                sin_sum += rad.sin();
+                cos_sum += rad.cos();
+                sp += g.speed; sz += g.body_length; ag += g.aggression; met += g.metabolism;
                 count += 1;
             }
         }
         let n = count.max(1) as f32;
-        (h/n, sp/n, sz/n, ag/n, met/n)
+        let avg_h = sin_sum.atan2(cos_sum).to_degrees().rem_euclid(360.0);
+        (avg_h, sp/n, sz/n, ag/n, met/n)
     } else {
         (0.0, 0.0, 0.0, 0.0, 0.0)
     };

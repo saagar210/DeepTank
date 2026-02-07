@@ -304,7 +304,7 @@ function App() {
         audioRef.current?.playFeed();
       }
     },
-    [feedMode, selectedFish, decorationMode, decorationType],
+    [feedMode, selectedFish, decorationMode, decorationType, foodType],
   );
 
   const handlePauseToggle = useCallback(async () => {
@@ -510,7 +510,7 @@ function App() {
       {replayOpen && (
         <ReplayControls
           onClose={() => setReplayOpen(false)}
-          onPauseSimulation={() => invoke("toggle_pause")}
+          onPauseSimulation={() => invoke("pause")}
         />
       )}
 
