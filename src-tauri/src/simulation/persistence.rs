@@ -137,6 +137,33 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
             flip_x INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS species_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tick INTEGER NOT NULL,
+            species_id INTEGER NOT NULL,
+            species_name TEXT,
+            population INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS achievements (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            unlocked_at_tick INTEGER,
+            unlocked_at TEXT
+        );
+
+        -- Migration: add disease_resistance column if missing
+        -- SQLite doesn't have IF NOT EXISTS for ALTER TABLE, so check column existence via pragma
+        ",
+    )?;
+    // Add disease_resistance column if not present
+    let has_disease_col: bool = conn.prepare("SELECT disease_resistance FROM genomes LIMIT 0")
+        .is_ok();
+    if !has_disease_col {
+        conn.execute_batch("ALTER TABLE genomes ADD COLUMN disease_resistance REAL NOT NULL DEFAULT 0.5;").ok();
+    }
+    conn.execute_batch("
         CREATE INDEX IF NOT EXISTS idx_genomes_generation ON genomes(generation);
         CREATE INDEX IF NOT EXISTS idx_snapshots_tick ON population_snapshots(tick);
         CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -172,15 +199,15 @@ pub fn save_state(
                 dorsal_fin_size, pectoral_fin_size, pattern_type, pattern_data,
                 pattern_intensity, pattern_color_offset, eye_size, speed, aggression,
                 school_affinity, curiosity, boldness, metabolism, fertility,
-                lifespan_factor, maturity_age, born_at_tick)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
+                lifespan_factor, maturity_age, born_at_tick, disease_resistance)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
             params![
                 g.id, g.generation, g.parent_a, g.parent_b, sex_str,
                 g.base_hue, g.saturation, g.lightness, g.body_length, g.body_width, g.tail_size,
                 g.dorsal_fin_size, g.pectoral_fin_size, pat_type, pat_data,
                 g.pattern_intensity, g.pattern_color_offset, g.eye_size, g.speed, g.aggression,
                 g.school_affinity, g.curiosity, g.boldness, g.metabolism, g.fertility,
-                g.lifespan_factor, g.maturity_age, 0i64,
+                g.lifespan_factor, g.maturity_age, 0i64, g.disease_resistance,
             ],
         )?;
     }
@@ -239,7 +266,7 @@ pub fn load_state(
                 body_length, body_width, tail_size, dorsal_fin_size, pectoral_fin_size,
                 pattern_type, pattern_data, pattern_intensity, pattern_color_offset, eye_size,
                 speed, aggression, school_affinity, curiosity, boldness, metabolism, fertility,
-                lifespan_factor, maturity_age FROM genomes"
+                lifespan_factor, maturity_age, disease_resistance FROM genomes"
     )?;
     let genome_rows = stmt.query_map([], |row| {
         let sex_str: String = row.get(4)?;
@@ -272,6 +299,7 @@ pub fn load_state(
             fertility: row.get(24)?,
             lifespan_factor: row.get(25)?,
             maturity_age: row.get(26)?,
+            disease_resistance: row.get::<_, f64>(27).unwrap_or(0.5) as f32,
         })
     })?;
     for g in genome_rows {
@@ -323,6 +351,9 @@ pub fn load_state(
             starvation_ticks: 0,
             fleeing_from: None,
             killed_by_predator: false,
+            is_infected: false,
+            infection_timer: 0,
+            recovery_timer: 0,
         })
     })?;
     for f in fish_rows {
@@ -425,6 +456,36 @@ pub fn save_snapshot(
         ],
     )?;
     Ok(())
+}
+
+pub fn save_species_snapshot(conn: &Connection, tick: u64, species: &[Species]) -> Result<()> {
+    for s in species {
+        if s.extinct_at_tick.is_some() { continue; }
+        conn.execute(
+            "INSERT INTO species_snapshots (tick, species_id, species_name, population) VALUES (?1,?2,?3,?4)",
+            params![tick as i64, s.id, s.name.as_deref().unwrap_or("unnamed"), s.member_count],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn get_species_snapshots(conn: &Connection) -> Vec<(i64, u32, String, u32)> {
+    let mut results = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT tick, species_id, species_name, population FROM species_snapshots ORDER BY tick ASC LIMIT 5000"
+    ) {
+        if let Ok(rows) = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, u32>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, u32>(3)?,
+            ))
+        }) {
+            for r in rows.flatten() { results.push(r); }
+        }
+    }
+    results
 }
 
 fn serialize_pattern(p: &PatternGene) -> (String, Option<String>) {

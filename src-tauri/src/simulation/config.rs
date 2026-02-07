@@ -60,6 +60,17 @@ pub struct SimulationConfig {
     pub master_volume: f32,
     pub ambient_enabled: bool,
     pub event_sounds_enabled: bool,
+
+    // Visual
+    pub theme: String,
+
+    // Disease
+    pub disease_enabled: bool,
+    pub disease_infection_chance: f32,
+    pub disease_spontaneous_chance: f32,
+    pub disease_duration: u32,
+    pub disease_damage: f32,
+    pub disease_spread_radius: f32,
 }
 
 impl Default for SimulationConfig {
@@ -115,6 +126,15 @@ impl Default for SimulationConfig {
             master_volume: 0.3,
             ambient_enabled: true,
             event_sounds_enabled: true,
+
+            theme: "aquarium".to_string(),
+
+            disease_enabled: false,
+            disease_infection_chance: 0.3,
+            disease_spontaneous_chance: 0.00005,
+            disease_duration: 600,
+            disease_damage: 0.0005,
+            disease_spread_radius: 40.0,
         }
     }
 }

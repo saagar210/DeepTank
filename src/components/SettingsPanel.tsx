@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Settings {
   // Boids
@@ -27,6 +28,15 @@ interface Settings {
   master_volume: number;
   ambient_enabled: boolean;
   event_sounds_enabled: boolean;
+  // Visual
+  theme: string;
+  // Disease
+  disease_enabled: boolean;
+  disease_infection_chance: number;
+  disease_spontaneous_chance: number;
+  disease_duration: number;
+  disease_damage: number;
+  disease_spread_radius: number;
 }
 
 interface Props {
@@ -255,6 +265,68 @@ export function SettingsPanel({ open, onClose, settings, onUpdate }: Props) {
             <Toggle label="Day/Night cycle" value={settings.day_night_cycle} onChange={(v) => onUpdate("day_night_cycle", v)} />
             <Slider label="Bubble rate" value={settings.bubble_rate} min={0} max={3} step={0.1} onChange={(v) => onUpdate("bubble_rate", v)} />
             <Slider label="Current strength" value={settings.current_strength} min={0} max={1} step={0.05} onChange={(v) => onUpdate("current_strength", v)} />
+            <div style={{ marginTop: 12 }}>
+              <div style={sectionTitleStyle}>Theme</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {(["aquarium", "tropical", "deep_ocean", "freshwater"] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => onUpdate("theme", t)}
+                    style={{
+                      padding: "5px 10px",
+                      border: "1px solid rgba(255,255,255,0.15)",
+                      borderRadius: 4,
+                      background: settings.theme === t ? "rgba(100,160,255,0.25)" : "rgba(255,255,255,0.06)",
+                      color: settings.theme === t ? "#8bf" : "rgba(255,255,255,0.5)",
+                      fontSize: 11,
+                      cursor: "pointer",
+                      fontFamily: "system-ui",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {t.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <div style={sectionTitleStyle}>Disease</div>
+              <Toggle label="Enable disease" value={settings.disease_enabled} onChange={(v) => onUpdate("disease_enabled", v)} />
+              {settings.disease_enabled && (
+                <>
+                  <Slider label="Infection chance" value={settings.disease_infection_chance} min={0} max={1} step={0.05} onChange={(v) => onUpdate("disease_infection_chance", v)} />
+                  <Slider label="Spontaneous rate" value={settings.disease_spontaneous_chance} min={0} max={0.001} step={0.00001} onChange={(v) => onUpdate("disease_spontaneous_chance", v)} />
+                  <Slider label="Duration (ticks)" value={settings.disease_duration} min={100} max={2000} step={50} onChange={(v) => onUpdate("disease_duration", v)} />
+                  <Slider label="Damage/tick" value={settings.disease_damage} min={0} max={0.005} step={0.0001} onChange={(v) => onUpdate("disease_damage", v)} />
+                  <Slider label="Spread radius" value={settings.disease_spread_radius} min={10} max={100} step={5} onChange={(v) => onUpdate("disease_spread_radius", v)} />
+                </>
+              )}
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <div style={sectionTitleStyle}>Tank Sharing</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => invoke("export_tank").catch((e: unknown) => console.error("Export failed:", e))}
+                  style={{
+                    flex: 1, padding: "8px 0", border: "1px solid rgba(100,160,255,0.3)",
+                    borderRadius: 4, background: "rgba(100,160,255,0.1)", color: "#8bf",
+                    fontSize: 11, cursor: "pointer", fontFamily: "system-ui",
+                  }}
+                >
+                  Export Tank
+                </button>
+                <button
+                  onClick={() => invoke("import_tank").catch((e: unknown) => console.error("Import failed:", e))}
+                  style={{
+                    flex: 1, padding: "8px 0", border: "1px solid rgba(255,180,100,0.3)",
+                    borderRadius: 4, background: "rgba(255,180,100,0.1)", color: "#fb8",
+                    fontSize: 11, cursor: "pointer", fontFamily: "system-ui",
+                  }}
+                >
+                  Import Tank
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

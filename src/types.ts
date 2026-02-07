@@ -12,11 +12,13 @@ export interface FishState {
   age_fraction: number;
   genome_id: number;
   energy: number;
+  is_infected: boolean;
 }
 
 export interface FoodState {
   x: number;
   y: number;
+  food_type: string;
 }
 
 export interface BubbleState {
@@ -34,11 +36,21 @@ export interface SimEvent {
   Extinction?: { species_id: number };
 }
 
+export interface DecorationState {
+  id: number;
+  decoration_type: string;
+  x: number;
+  y: number;
+  scale: number;
+  flip_x: boolean;
+}
+
 export interface FrameUpdate {
   tick: number;
   fish: FishState[];
   food: FoodState[];
   bubbles: BubbleState[];
+  decorations: DecorationState[];
   events: SimEvent[];
   water_quality: number;
   population: number;
@@ -96,6 +108,20 @@ export interface Species {
   member_count: number;
 }
 
+export interface SpeciesHistoryEntry {
+  id: number;
+  name: string | null;
+  description: string | null;
+  discovered_at_tick: number;
+  extinct_at_tick: number | null;
+  centroid_hue: number;
+  centroid_speed: number;
+  centroid_size: number;
+  centroid_pattern: string;
+  member_count: number;
+  representative_genome_id: number | null;
+}
+
 export interface FishDetail {
   id: number;
   genome_id: number;
@@ -110,6 +136,7 @@ export interface FishDetail {
   behavior: string;
   meals_eaten: number;
   is_alive: boolean;
+  is_infected: boolean;
   genome: FishGenome;
   species_name: string | null;
 }

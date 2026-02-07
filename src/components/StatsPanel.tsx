@@ -23,7 +23,23 @@ interface Props {
   onClose: () => void;
 }
 
-type Tab = "population" | "traits" | "journal";
+interface EventEntry {
+  tick: number;
+  event_type: string;
+  fish_id: number | null;
+  species_id: number | null;
+  description: string;
+  timestamp: string;
+}
+
+interface SpeciesSnapshot {
+  tick: number;
+  species_id: number;
+  species_name: string;
+  population: number;
+}
+
+type Tab = "population" | "species" | "traits" | "journal" | "events";
 
 const panelStyle: React.CSSProperties = {
   position: "absolute",
@@ -130,17 +146,143 @@ function MiniChart({
   );
 }
 
+function SpeciesStackChart({ data }: { data: SpeciesSnapshot[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || data.length === 0) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Group by tick, then by species
+    const ticks = [...new Set(data.map((d) => d.tick))].sort((a, b) => a - b);
+    const speciesIds = [...new Set(data.map((d) => d.species_id))];
+
+    // Build species -> hue map from names
+    const speciesHues = new Map<number, number>();
+    for (const d of data) {
+      if (!speciesHues.has(d.species_id)) {
+        // Hash species_id into a hue
+        speciesHues.set(d.species_id, (d.species_id * 137) % 360);
+      }
+    }
+
+    // Build stacked data: for each tick, sum populations per species
+    const tickData = ticks.map((tick) => {
+      const entries = data.filter((d) => d.tick === tick);
+      const pops = new Map<number, number>();
+      for (const e of entries) pops.set(e.species_id, e.population);
+      return { tick, pops };
+    });
+
+    if (ticks.length < 2) return;
+
+    // Find max total
+    let maxTotal = 0;
+    for (const td of tickData) {
+      let total = 0;
+      for (const p of td.pops.values()) total += p;
+      if (total > maxTotal) maxTotal = total;
+    }
+    if (maxTotal === 0) return;
+
+    const step = w / (ticks.length - 1);
+
+    // Draw stacked areas bottom-up
+    for (let si = speciesIds.length - 1; si >= 0; si--) {
+      const spId = speciesIds[si];
+      const hue = speciesHues.get(spId) ?? 180;
+
+      // Compute cumulative base + top for this species
+      ctx.beginPath();
+      for (let ti = 0; ti < ticks.length; ti++) {
+        const td = tickData[ti];
+        // Sum of species below this one
+        let base = 0;
+        for (let j = 0; j < si; j++) {
+          base += td.pops.get(speciesIds[j]) ?? 0;
+        }
+        const top = base + (td.pops.get(spId) ?? 0);
+        const x = ti * step;
+        const yTop = h - (top / maxTotal) * (h - 4);
+        if (ti === 0) ctx.moveTo(x, yTop);
+        else ctx.lineTo(x, yTop);
+      }
+      // Close back along base
+      for (let ti = ticks.length - 1; ti >= 0; ti--) {
+        const td = tickData[ti];
+        let base = 0;
+        for (let j = 0; j < si; j++) {
+          base += td.pops.get(speciesIds[j]) ?? 0;
+        }
+        const x = ti * step;
+        const yBase = h - (base / maxTotal) * (h - 4);
+        ctx.lineTo(x, yBase);
+      }
+      ctx.closePath();
+      ctx.fillStyle = `hsla(${hue}, 60%, 50%, 0.5)`;
+      ctx.fill();
+    }
+  }, [data]);
+
+  // Get legend entries
+  const speciesNames = new Map<number, string>();
+  for (const d of data) {
+    speciesNames.set(d.species_id, d.species_name);
+  }
+
+  return (
+    <div>
+      <div style={{ marginBottom: 4, fontSize: 11, color: "rgba(255,255,255,0.5)" }}>
+        Population by Species
+      </div>
+      <canvas
+        ref={canvasRef}
+        width={340}
+        height={120}
+        style={{ width: "100%", height: 120, borderRadius: 4, background: "rgba(255,255,255,0.03)" }}
+      />
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+        {[...speciesNames.entries()].map(([id, name]) => {
+          const hue = (id * 137) % 360;
+          return (
+            <div key={id} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9 }}>
+              <div style={{ width: 8, height: 8, borderRadius: 2, background: `hsl(${hue}, 60%, 50%)` }} />
+              <span style={{ color: "rgba(255,255,255,0.5)" }}>{name}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function StatsPanel({ open, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("population");
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [journal, setJournal] = useState<JournalEntry[]>([]);
+  const [events, setEvents] = useState<EventEntry[]>([]);
+  const [speciesSnapshots, setSpeciesSnapshots] = useState<SpeciesSnapshot[]>([]);
 
   const fetchData = useCallback(async () => {
     const snaps = await invoke<Snapshot[]>("get_snapshots").catch(() => []);
     setSnapshots(snaps as Snapshot[]);
+    if (tab === "species") {
+      const ss = await invoke<SpeciesSnapshot[]>("get_species_snapshots").catch(() => []);
+      setSpeciesSnapshots(ss as SpeciesSnapshot[]);
+    }
     if (tab === "journal") {
       const entries = await invoke<JournalEntry[]>("get_journal_entries").catch(() => []);
       setJournal(entries as JournalEntry[]);
+    }
+    if (tab === "events") {
+      const evts = await invoke<EventEntry[]>("get_events", { eventType: null, limit: 100 }).catch(() => []);
+      setEvents(evts as EventEntry[]);
     }
   }, [tab]);
 
@@ -177,6 +319,12 @@ export function StatsPanel({ open, onClose }: Props) {
           Population
         </button>
         <button
+          style={tab === "species" ? activeTabStyle : tabStyle}
+          onClick={() => setTab("species")}
+        >
+          Species
+        </button>
+        <button
           style={tab === "traits" ? activeTabStyle : tabStyle}
           onClick={() => setTab("traits")}
         >
@@ -187,6 +335,12 @@ export function StatsPanel({ open, onClose }: Props) {
           onClick={() => setTab("journal")}
         >
           Journal
+        </button>
+        <button
+          style={tab === "events" ? activeTabStyle : tabStyle}
+          onClick={() => setTab("events")}
+        >
+          Events
         </button>
         <button
           onClick={onClose}
@@ -211,6 +365,10 @@ export function StatsPanel({ open, onClose }: Props) {
             <MiniChart data={speciesData} color="#fa6" label="Species" />
             <MiniChart data={wqData} color="#6a6" label="Water Quality %" max={100} />
           </>
+        )}
+
+        {tab === "species" && (
+          <SpeciesStackChart data={speciesSnapshots} />
         )}
 
         {tab === "traits" && (
@@ -254,6 +412,46 @@ export function StatsPanel({ open, onClose }: Props) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {tab === "events" && (
+          <div>
+            {events.length === 0 && (
+              <div style={{ color: "rgba(255,255,255,0.3)", textAlign: "center", padding: 20 }}>
+                No events recorded yet.
+              </div>
+            )}
+            {events.map((ev, i) => {
+              const colors: Record<string, string> = {
+                birth: "#4a4", death: "#a44", new_species: "#da4",
+                extinction: "#a44", predation: "#d84",
+              };
+              const color = colors[ev.event_type] ?? "#68a";
+              return (
+                <div
+                  key={i}
+                  style={{
+                    marginBottom: 6,
+                    padding: "6px 8px",
+                    background: "rgba(255,255,255,0.04)",
+                    borderRadius: 4,
+                    borderLeft: `3px solid ${color}`,
+                    fontSize: 11,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color, fontWeight: 600, fontSize: 10, textTransform: "uppercase" }}>
+                      {ev.event_type.replace("_", " ")}
+                    </span>
+                    <span style={{ fontSize: 9, color: "rgba(255,255,255,0.3)" }}>
+                      tick {ev.tick}
+                    </span>
+                  </div>
+                  <div style={{ color: "rgba(255,255,255,0.7)", marginTop: 2 }}>{ev.description}</div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

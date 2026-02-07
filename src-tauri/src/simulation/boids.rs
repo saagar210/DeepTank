@@ -73,13 +73,14 @@ impl BoidsEngine {
         config: &SimulationConfig,
         tick: u64,
         food_positions: &[(f32, f32)],
+        obstacles: &[(f32, f32, f32)],
     ) {
         self.grid.rebuild(fish);
 
         // Compute forces for all fish, then apply (avoids borrow issues)
         let forces: Vec<(f32, f32)> = (0..fish.len())
             .map(|i| {
-                self.compute_forces(i, fish, genomes, config, tick, food_positions)
+                self.compute_forces(i, fish, genomes, config, tick, food_positions, obstacles)
             })
             .collect();
 
@@ -145,6 +146,7 @@ impl BoidsEngine {
         config: &SimulationConfig,
         tick: u64,
         food_positions: &[(f32, f32)],
+        obstacles: &[(f32, f32, f32)],
     ) -> (f32, f32) {
         let me = &fish[fish_idx];
         let my_genome = match genomes.get(&me.genome_id) {
@@ -261,6 +263,22 @@ impl BoidsEngine {
         if me.y > config.tank_height - margin {
             let t = 1.0 - (config.tank_height - me.y) / margin;
             fy -= t * t * config.base_max_speed;
+        }
+
+        // Obstacle avoidance (decorations)
+        for &(ox, oy, radius) in obstacles {
+            let avoidance_radius = radius + config.boundary_margin * 0.5;
+            let dx = me.x - ox;
+            let dy = me.y - oy;
+            let dist_sq = dx * dx + dy * dy;
+            let avoidance_sq = avoidance_radius * avoidance_radius;
+            if dist_sq < avoidance_sq && dist_sq > 0.01 {
+                let dist = dist_sq.sqrt();
+                let t = 1.0 - dist / avoidance_radius;
+                let force = t * t * config.base_max_speed;
+                fx += (dx / dist) * force;
+                fy += (dy / dist) * force;
+            }
         }
 
         // Wander force (Perlin noise)

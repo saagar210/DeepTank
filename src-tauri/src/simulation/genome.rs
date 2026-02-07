@@ -82,6 +82,7 @@ pub struct FishGenome {
     pub fertility: f32,
     pub lifespan_factor: f32,
     pub maturity_age: f32,
+    pub disease_resistance: f32,
 }
 
 static NEXT_GENOME_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -126,6 +127,7 @@ impl FishGenome {
             fertility: rng.gen_range(0.3..1.0),
             lifespan_factor: rng.gen_range(0.5..2.0),
             maturity_age: rng.gen_range(0.3..0.7),
+            disease_resistance: rng.gen_range(0.2..0.8),
         }
     }
 
@@ -185,6 +187,7 @@ impl FishGenome {
             fertility: inherit_trait(parent_a.fertility, parent_b.fertility, 0.3, 1.0, rng, mutation_scale, rate_large, rate_small),
             lifespan_factor: inherit_trait(parent_a.lifespan_factor, parent_b.lifespan_factor, 0.5, 2.0, rng, mutation_scale, rate_large, rate_small),
             maturity_age: inherit_trait(parent_a.maturity_age, parent_b.maturity_age, 0.3, 0.7, rng, mutation_scale, rate_large, rate_small),
+            disease_resistance: inherit_trait(parent_a.disease_resistance, parent_b.disease_resistance, 0.0, 1.0, rng, mutation_scale, rate_large, rate_small),
         };
 
         // Inbreeding penalties
@@ -301,6 +304,7 @@ pub fn genome_distance(a: &FishGenome, b: &FishGenome) -> f32 {
     d += (a.speed - b.speed).abs() / 1.5 * 0.5;
     d += (a.aggression - b.aggression).abs() * 0.5;
     d += (a.school_affinity - b.school_affinity).abs() * 0.5;
+    d += (a.disease_resistance - b.disease_resistance).abs() * 0.3;
 
     d
 }

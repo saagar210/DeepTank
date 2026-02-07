@@ -40,9 +40,13 @@ interface Props {
   frame: FrameUpdate | null;
   onStatsToggle?: () => void;
   onSettingsToggle?: () => void;
+  onDecorateToggle?: () => void;
+  onGalleryToggle?: () => void;
+  onAchievementsToggle?: () => void;
+  onReplayToggle?: () => void;
 }
 
-export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsToggle }: Props) {
+export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsToggle, onDecorateToggle, onGalleryToggle, onAchievementsToggle, onReplayToggle }: Props) {
   const wq = frame?.water_quality ?? 1;
   const wqColor = wq > 0.6 ? "#4a4" : wq > 0.4 ? "#aa4" : "#a44";
   const wqPct = Math.round(wq * 100);
@@ -86,6 +90,26 @@ export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsTog
         <span style={{ fontSize: 11, color: wqColor }}>{wqPct}%</span>
       </div>
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+        {onGalleryToggle && (
+          <button style={iconBtn} onClick={onGalleryToggle} title="Species Gallery">
+            Gallery
+          </button>
+        )}
+        {onAchievementsToggle && (
+          <button style={iconBtn} onClick={onAchievementsToggle} title="Achievements">
+            Achievements
+          </button>
+        )}
+        {onReplayToggle && (
+          <button style={iconBtn} onClick={onReplayToggle} title="Time-Lapse Replay">
+            Replay
+          </button>
+        )}
+        {onDecorateToggle && (
+          <button style={iconBtn} onClick={onDecorateToggle} title="Decorations [D]">
+            Decorate
+          </button>
+        )}
         <button style={iconBtn} onClick={onStatsToggle} title="Stats [S]">
           Stats
         </button>

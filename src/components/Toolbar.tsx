@@ -43,6 +43,10 @@ interface Props {
   onSpeedChange: (mult: number) => void;
   onFeedToggle: () => void;
   onMuteToggle: () => void;
+  onStepForward?: () => void;
+  onScreenshot?: () => void;
+  foodType?: string;
+  onFoodTypeChange?: (type: string) => void;
 }
 
 export const Toolbar = memo(function Toolbar({
@@ -54,15 +58,40 @@ export const Toolbar = memo(function Toolbar({
   onSpeedChange,
   onFeedToggle,
   onMuteToggle,
+  onStepForward,
+  onScreenshot,
+  foodType,
+  onFoodTypeChange,
 }: Props) {
   return (
     <div style={barStyle}>
       <button style={feedMode ? activeBtnStyle : btnStyle} onClick={onFeedToggle}>
         Feed {feedMode ? "(active)" : "[F]"}
       </button>
+      {onFoodTypeChange && (
+        <select
+          value={foodType ?? "pellet"}
+          onChange={(e) => onFoodTypeChange(e.target.value)}
+          style={{
+            ...btnStyle,
+            appearance: "none",
+            paddingRight: 20,
+            background: "rgba(255,255,255,0.08)",
+          }}
+        >
+          <option value="flake">Flake</option>
+          <option value="pellet">Pellet</option>
+          <option value="live">Live</option>
+        </select>
+      )}
       <button style={btnStyle} onClick={onPauseToggle}>
         {paused ? "Play" : "Pause"} [Space]
       </button>
+      {paused && onStepForward && (
+        <button style={btnStyle} onClick={onStepForward}>
+          Step [.]
+        </button>
+      )}
       <select
         value={speed}
         onChange={(e) => onSpeedChange(Number(e.target.value))}
@@ -81,6 +110,11 @@ export const Toolbar = memo(function Toolbar({
       <button style={btnStyle} onClick={onMuteToggle}>
         {muted ? "Unmute" : "Mute"} [M]
       </button>
+      {onScreenshot && (
+        <button style={btnStyle} onClick={onScreenshot}>
+          Screenshot [P]
+        </button>
+      )}
     </div>
   );
 });

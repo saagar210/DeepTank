@@ -9,27 +9,85 @@ pub const BASE_LIFESPAN: u32 = 20_000;
 // ─── Food ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FoodType {
+    Flake,
+    Pellet,
+    LiveFood,
+}
+
+impl FoodType {
+    pub fn nutrition(&self) -> f32 {
+        match self {
+            FoodType::Flake => 0.2,
+            FoodType::Pellet => 0.3,
+            FoodType::LiveFood => 0.5,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FoodType::Flake => "flake",
+            FoodType::Pellet => "pellet",
+            FoodType::LiveFood => "live",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "flake" => FoodType::Flake,
+            "live" => FoodType::LiveFood,
+            _ => FoodType::Pellet,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FoodParticle {
     pub x: f32,
     pub y: f32,
     pub age: u32,
     pub on_floor: bool,
+    pub food_type: FoodType,
 }
 
 impl FoodParticle {
     pub fn new(x: f32, y: f32) -> Self {
-        Self { x, y, age: 0, on_floor: false }
+        Self { x, y, age: 0, on_floor: false, food_type: FoodType::Pellet }
+    }
+
+    pub fn new_typed(x: f32, y: f32, food_type: FoodType) -> Self {
+        Self { x, y, age: 0, on_floor: false, food_type }
     }
 
     pub fn update(&mut self, config: &SimulationConfig, tick: u64) {
         self.age += 1;
-        if !self.on_floor {
-            // Drift downward with sine wobble
-            self.y += 0.5;
-            self.x += (tick as f32 * 0.05 + self.x * 0.1).sin() * 0.3;
-            if self.y >= config.tank_height - 30.0 {
-                self.on_floor = true;
-                self.y = config.tank_height - 30.0;
+        match self.food_type {
+            FoodType::Flake => {
+                if !self.on_floor {
+                    self.y += 0.1; // slow sink
+                    self.x += (tick as f32 * 0.05 + self.x * 0.1).sin() * 0.8; // horizontal drift
+                    if self.y >= config.tank_height - 30.0 {
+                        self.on_floor = true;
+                        self.y = config.tank_height - 30.0;
+                    }
+                }
+            }
+            FoodType::Pellet => {
+                if !self.on_floor {
+                    self.y += 0.5;
+                    self.x += (tick as f32 * 0.05 + self.x * 0.1).sin() * 0.3;
+                    if self.y >= config.tank_height - 30.0 {
+                        self.on_floor = true;
+                        self.y = config.tank_height - 30.0;
+                    }
+                }
+            }
+            FoodType::LiveFood => {
+                // Never settles; wanders via sine movement
+                self.x += (tick as f32 * 0.02 + self.y * 0.05).sin() * 0.6;
+                self.y += (tick as f32 * 0.015 + self.x * 0.03).cos() * 0.4;
+                self.x = self.x.clamp(10.0, config.tank_width - 10.0);
+                self.y = self.y.clamp(10.0, config.tank_height - 40.0);
             }
         }
     }
@@ -76,6 +134,59 @@ pub struct Species {
     pub member_genome_ids: Vec<u32>,
 }
 
+// ─── Decorations ───
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DecorationType {
+    Rock,
+    TallPlant,
+    ShortPlant,
+    Coral,
+}
+
+impl DecorationType {
+    pub fn is_plant(&self) -> bool {
+        matches!(self, DecorationType::TallPlant | DecorationType::ShortPlant)
+    }
+
+    pub fn obstacle_radius(&self) -> f32 {
+        match self {
+            DecorationType::Rock => 25.0,
+            DecorationType::TallPlant => 12.0,
+            DecorationType::ShortPlant => 8.0,
+            DecorationType::Coral => 18.0,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DecorationType::Rock => "rock",
+            DecorationType::TallPlant => "tall_plant",
+            DecorationType::ShortPlant => "short_plant",
+            DecorationType::Coral => "coral",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "tall_plant" => DecorationType::TallPlant,
+            "short_plant" => DecorationType::ShortPlant,
+            "coral" => DecorationType::Coral,
+            _ => DecorationType::Rock,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Decoration {
+    pub id: u32,
+    pub decoration_type: DecorationType,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+    pub flip_x: bool,
+}
+
 // ─── Bubble ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,7 +227,9 @@ pub struct EcosystemManager {
     pub species: Vec<Species>,
     pub events: Vec<SimEvent>,
     pub plant_count: u32,
+    pub decorations: Vec<Decoration>,
     next_species_id: u32,
+    next_decoration_id: u32,
     last_speciation_tick: u64,
     auto_feed_timer: u32,
 }
@@ -129,15 +242,56 @@ impl EcosystemManager {
             water_quality: 1.0,
             species: Vec::new(),
             events: Vec::new(),
-            plant_count: 2,
+            plant_count: 0,
+            decorations: Vec::new(),
             next_species_id: 1,
+            next_decoration_id: 1,
             last_speciation_tick: 0,
             auto_feed_timer: 0,
         }
     }
 
+    pub fn recompute_plant_count(&mut self) {
+        self.plant_count = self.decorations.iter()
+            .filter(|d| d.decoration_type.is_plant())
+            .count() as u32;
+    }
+
+    pub fn add_decoration(&mut self, dtype: DecorationType, x: f32, y: f32, scale: f32, flip_x: bool) -> Decoration {
+        let d = Decoration {
+            id: self.next_decoration_id,
+            decoration_type: dtype,
+            x,
+            y,
+            scale,
+            flip_x,
+        };
+        self.next_decoration_id += 1;
+        self.decorations.push(d.clone());
+        self.recompute_plant_count();
+        d
+    }
+
+    pub fn remove_decoration(&mut self, id: u32) -> bool {
+        let len = self.decorations.len();
+        self.decorations.retain(|d| d.id != id);
+        let removed = self.decorations.len() < len;
+        if removed { self.recompute_plant_count(); }
+        removed
+    }
+
+    pub fn obstacle_positions(&self) -> Vec<(f32, f32, f32)> {
+        self.decorations.iter()
+            .map(|d| (d.x, d.y, d.decoration_type.obstacle_radius() * d.scale))
+            .collect()
+    }
+
     pub fn restore_species_counter(&mut self, val: u32) {
         self.next_species_id = val;
+    }
+
+    pub fn restore_decoration_counter(&mut self, val: u32) {
+        self.next_decoration_id = val;
     }
 
     pub fn restore_speciation_tick(&mut self, tick: u64) {
@@ -146,6 +300,11 @@ impl EcosystemManager {
 
     pub fn drop_food(&mut self, x: f32, y: f32) {
         self.food.push(FoodParticle::new(x, y.max(5.0).min(50.0)));
+        self.events.push(SimEvent::FeedingDrop { x, y });
+    }
+
+    pub fn drop_food_typed(&mut self, x: f32, y: f32, food_type: FoodType) {
+        self.food.push(FoodParticle::new_typed(x, y.max(5.0).min(50.0), food_type));
         self.events.push(SimEvent::FeedingDrop { x, y });
     }
 
@@ -198,6 +357,11 @@ impl EcosystemManager {
 
         // Reproduction
         self.process_reproduction(fish, genomes, config, tick, rng);
+
+        // Disease processing
+        if config.disease_enabled {
+            self.process_disease(fish, genomes, config, rng);
+        }
 
         // Remove expired food
         let wq = &mut self.water_quality;
@@ -260,7 +424,8 @@ impl EcosystemManager {
         let eating_radius_sq = 8.0 * 8.0;
 
         let mut eaten_food = std::collections::HashSet::new();
-        for f in fish.iter_mut() {
+        let mut nutrition_map: Vec<(usize, f32)> = Vec::new(); // fish_idx -> nutrition
+        for (fi, f) in fish.iter_mut().enumerate() {
             if !f.is_alive || (f.behavior != BehaviorState::Foraging && f.behavior != BehaviorState::Swimming) {
                 continue;
             }
@@ -272,13 +437,23 @@ impl EcosystemManager {
                 let dy = f.y - food.y;
                 if dx * dx + dy * dy < eating_radius_sq && !eaten_food.contains(&food_idx) {
                     eaten_food.insert(food_idx);
+                    nutrition_map.push((fi, food.food_type.nutrition()));
                     f.eat();
                     break;
                 }
             }
         }
 
-        // Remove eaten food (reverse order to preserve indices)
+        // Apply nutrition bonuses for non-pellet food
+        for (fi, nutrition) in &nutrition_map {
+            let f = &mut fish[*fi];
+            // eat() reduces hunger by 0.3; adjust based on nutrition
+            // pellet=0.3 is baseline; flake=0.2 less satisfying, live=0.5 more
+            let adjustment = nutrition - 0.3;
+            f.hunger = (f.hunger - adjustment).clamp(0.0, 1.0);
+        }
+
+        // Remove eaten food (reverse order to preserve indices via swap_remove on sorted-reverse)
         let mut eaten_sorted: Vec<_> = eaten_food.into_iter().collect();
         eaten_sorted.sort_unstable();
         for idx in eaten_sorted.into_iter().rev() {
@@ -697,6 +872,72 @@ impl EcosystemManager {
                 None => true,
             }
         });
+    }
+
+    fn process_disease(
+        &mut self,
+        fish: &mut [Fish],
+        genomes: &std::collections::HashMap<u32, FishGenome>,
+        config: &SimulationConfig,
+        rng: &mut impl Rng,
+    ) {
+        let spread_radius_sq = config.disease_spread_radius * config.disease_spread_radius;
+
+        // Spontaneous outbreak: tiny per-tick chance per fish
+        for f in fish.iter_mut() {
+            if !f.is_alive || f.is_infected || f.recovery_timer > 0 {
+                continue;
+            }
+            let resistance = genomes.get(&f.genome_id).map(|g| g.disease_resistance).unwrap_or(0.5);
+            if rng.gen::<f32>() < config.disease_spontaneous_chance * (1.0 - resistance) {
+                f.is_infected = true;
+                f.infection_timer = 0;
+            }
+        }
+
+        // Spreading: infected fish infect nearby fish
+        let infected_positions: Vec<(f32, f32)> = fish.iter()
+            .filter(|f| f.is_alive && f.is_infected)
+            .map(|f| (f.x, f.y))
+            .collect();
+
+        for f in fish.iter_mut() {
+            if !f.is_alive || f.is_infected || f.recovery_timer > 0 {
+                continue;
+            }
+            let resistance = genomes.get(&f.genome_id).map(|g| g.disease_resistance).unwrap_or(0.5);
+            for &(ix, iy) in &infected_positions {
+                let dx = f.x - ix;
+                let dy = f.y - iy;
+                if dx * dx + dy * dy < spread_radius_sq {
+                    if rng.gen::<f32>() < config.disease_infection_chance * (1.0 - resistance) * 0.01 {
+                        f.is_infected = true;
+                        f.infection_timer = 0;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Update infected fish: damage + recovery
+        for f in fish.iter_mut() {
+            if !f.is_alive {
+                continue;
+            }
+            if f.is_infected {
+                f.infection_timer += 1;
+                f.health -= config.disease_damage;
+                f.energy = (f.energy - 0.0003).max(0.0);
+
+                if f.infection_timer >= config.disease_duration {
+                    f.is_infected = false;
+                    f.infection_timer = 0;
+                    f.recovery_timer = config.disease_duration / 2; // temporary immunity
+                }
+            } else if f.recovery_timer > 0 {
+                f.recovery_timer -= 1;
+            }
+        }
     }
 
     fn spawn_bubbles(&mut self, config: &SimulationConfig, tick: u64, rng: &mut impl Rng) {

@@ -1,3 +1,4 @@
+pub mod achievements;
 pub mod boids;
 pub mod config;
 pub mod ecosystem;
@@ -22,6 +23,7 @@ pub struct FrameUpdate {
     pub fish: Vec<FishState>,
     pub food: Vec<FoodState>,
     pub bubbles: Vec<BubbleState>,
+    pub decorations: Vec<DecorationState>,
     pub events: Vec<SimEvent>,
     pub water_quality: f32,
     pub population: u32,
@@ -44,12 +46,14 @@ pub struct FishState {
     pub age_fraction: f32,
     pub genome_id: u32,
     pub energy: f32,
+    pub is_infected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FoodState {
     pub x: f32,
     pub y: f32,
+    pub food_type: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +61,16 @@ pub struct BubbleState {
     pub x: f32,
     pub y: f32,
     pub radius: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecorationState {
+    pub id: u32,
+    pub decoration_type: String,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+    pub flip_x: bool,
 }
 
 /// Top-level simulation state managed by Tauri
@@ -116,12 +130,14 @@ impl SimulationState {
 
         // Boids physics
         let food_positions = self.ecosystem.food_positions();
+        let obstacles = self.ecosystem.obstacle_positions();
         self.boids.update(
             &mut self.fish,
             &self.genomes,
             &self.config,
             self.tick,
             &food_positions,
+            &obstacles,
         );
 
         // Ecosystem (behavior, feeding, predation, reproduction, speciation)
@@ -172,10 +188,19 @@ impl SimulationState {
                     age_fraction: age_frac,
                     genome_id: f.genome_id,
                     energy: f.energy,
+                    is_infected: f.is_infected,
                 }
             }).collect(),
-            food: self.ecosystem.food.iter().map(|f| FoodState { x: f.x, y: f.y }).collect(),
+            food: self.ecosystem.food.iter().map(|f| FoodState { x: f.x, y: f.y, food_type: f.food_type.as_str().to_string() }).collect(),
             bubbles: self.ecosystem.bubbles.iter().map(|b| BubbleState { x: b.x, y: b.y, radius: b.radius }).collect(),
+            decorations: self.ecosystem.decorations.iter().map(|d| DecorationState {
+                id: d.id,
+                decoration_type: d.decoration_type.as_str().to_string(),
+                x: d.x,
+                y: d.y,
+                scale: d.scale,
+                flip_x: d.flip_x,
+            }).collect(),
             events,
             water_quality: self.ecosystem.water_quality,
             population: self.fish.len() as u32,

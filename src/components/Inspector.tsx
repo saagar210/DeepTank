@@ -83,7 +83,7 @@ function lifeStageName(ageFrac: number, maturityAge: number): string {
   return "Elder";
 }
 
-export const Inspector = memo(function Inspector({ fish, onClose }: { fish: FishDetail; onClose: () => void }) {
+export const Inspector = memo(function Inspector({ fish, onClose, onViewLineage }: { fish: FishDetail; onClose: () => void; onViewLineage?: (genomeId: number) => void }) {
   const g = fish.genome;
   const hueColor = `hsl(${g.base_hue}, ${Math.round(g.saturation * 100)}%, ${Math.round(g.lightness * 100)}%)`;
 
@@ -120,6 +120,9 @@ export const Inspector = memo(function Inspector({ fish, onClose }: { fish: Fish
         {lifeStageName(fish.age / (BASE_LIFESPAN * g.lifespan_factor), g.maturity_age)}
         <span style={{ marginLeft: 8, ...labelStyle }}>State </span>
         {fish.behavior}
+        {fish.is_infected && (
+          <span style={{ marginLeft: 6, color: "#6d4", fontSize: 10, fontWeight: 600 }}>INFECTED</span>
+        )}
       </div>
 
       {/* Status bars */}
@@ -173,6 +176,24 @@ export const Inspector = memo(function Inspector({ fish, onClose }: { fish: Fish
         <div style={{ fontSize: 11 }}>
           Meals: {fish.meals_eaten}
         </div>
+        {onViewLineage && (
+          <button
+            onClick={() => onViewLineage(fish.genome_id)}
+            style={{
+              marginTop: 6,
+              padding: "4px 10px",
+              background: "rgba(100,160,255,0.15)",
+              border: "1px solid rgba(100,160,255,0.3)",
+              borderRadius: 4,
+              color: "#8bf",
+              fontSize: 10,
+              cursor: "pointer",
+              fontFamily: "system-ui",
+            }}
+          >
+            View Lineage
+          </button>
+        )}
       </div>
     </div>
   );

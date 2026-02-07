@@ -57,6 +57,11 @@ pub struct Fish {
     pub starvation_ticks: u32,
     pub fleeing_from: Option<u32>,
     pub killed_by_predator: bool,
+
+    // Disease
+    pub is_infected: bool,
+    pub infection_timer: u32,
+    pub recovery_timer: u32,
 }
 
 static NEXT_FISH_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -97,6 +102,9 @@ impl Fish {
             starvation_ticks: 0,
             fleeing_from: None,
             killed_by_predator: false,
+            is_infected: false,
+            infection_timer: 0,
+            recovery_timer: 0,
         }
     }
 
