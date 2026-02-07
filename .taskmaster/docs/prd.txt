@@ -1,0 +1,1208 @@
+# DeepTank — Living Desktop Aquarium with Genetic Evolution
+# Revised Engineering Specification
+
+## Project Overview
+
+A desktop aquarium simulation where fish swim using flocking algorithms (boids), eat, reproduce, and evolve through genetic inheritance. Fish have heritable traits — color, speed, size, pattern, behavior — that mutate across generations. Over time, your tank diverges into something unique. Species emerge that you didn't design. The algorithm discovered them.
+
+It's a screensaver that's also a genetic algorithm visualizer. Meditative to watch, scientifically interesting, and genuinely different every time you run it.
+
+### Design Principles
+1. **Emergent complexity from simple rules** — Boids + genetics + ecosystem pressure = lifelike behavior and speciation
+2. **Your tank is unique** — After running, no two tanks look alike. Populations diverge.
+3. **Set it and forget it** — Runs in the background. Come back and see what evolved.
+4. **Visually beautiful** — Smooth animation, organic shapes, calming ambient aesthetic with sound
+5. **Inspectable** — Click any fish to see its genome, lineage, generation, behavior state
+6. **Alive** — Water quality, food chains, predator-prey dynamics, population crashes and recoveries
+
+---
+
+## Architecture
+
+| Layer | Tech | Responsibility |
+|-------|------|---------------|
+| **Simulation Engine** | Rust (Tauri 2 backend) | Boids physics, genetics, reproduction, feeding, lifecycle, population management, water quality, behavior state machine |
+| **Renderer** | React 19 + HTML5 Canvas | Fish sprites, water effects, bubbles, plants, decorations, UI overlays |
+| **Persistence** | SQLite (rusqlite, WAL mode) | Aquarium state, population snapshots, genetic history, species registry, settings |
+| **Audio** | Web Audio API | Ambient water sounds, bubble effects, feeding sounds, event chimes |
+| **LLM Integration** | Ollama (local) | Species naming, aquarium journal entries, discovery announcements |
+
+### IPC Strategy: Rust to React
+
+The Rust simulation engine sends state to the React renderer via Tauri events. Key design decisions:
+
+**Binary serialization over JSON.** With 100 fish, each frame payload is ~100 fish x ~48 bytes = ~5KB. Using `bincode` or `rmp-serde` (MessagePack) for the frame payload keeps serialization overhead negligible. JSON would work but wastes cycles on string parsing 30 times per second.
+
+**Batched frame events.** One Tauri event per simulation tick containing ALL fish states. Never one event per fish.
+
+**Dual-rate architecture:**
+- Rust simulation ticks at **30Hz** (every ~33ms). This is the physics rate.
+- React renders at **60fps** via `requestAnimationFrame`. Between sim ticks, the renderer **interpolates** fish positions using previous and current state.
+- Interpolation formula: `render_pos = prev_pos + (current_pos - prev_pos) * alpha` where `alpha` = time since last tick / tick duration.
+
+**Frame payload structure:**
+```rust
+struct FrameUpdate {
+    tick: u64,
+    fish: Vec<FishState>,       // positions, velocities, states for all living fish
+    food: Vec<FoodState>,       // active food particles
+    bubbles: Vec<BubbleState>,  // active bubbles
+    events: Vec<SimEvent>,      // births, deaths, feedings that happened this tick
+    water_quality: f32,         // 0.0 - 1.0, current tank cleanliness
+}
+
+struct FishState {
+    id: u32,
+    x: f32,
+    y: f32,
+    z: f32,                     // depth layer (0.0 = back glass, 1.0 = front glass)
+    vx: f32,
+    vy: f32,
+    heading: f32,               // radians, for rotation
+    behavior: BehaviorState,    // current state machine state
+    hunger: f32,
+    health: f32,
+    age_fraction: f32,          // 0.0 - 1.0 (fraction of lifespan elapsed)
+    genome_id: u32,             // reference to cached genome (doesn't change per frame)
+}
+```
+
+**Genome caching on the frontend.** Fish genomes are immutable after birth. Send the genome once (on spawn) and cache it in a `Map<u32, FishGenome>` on the React side. Frame updates only carry the `genome_id` reference. This avoids re-sending 17+ floats per fish per frame.
+
+### Tauri Commands (React to Rust)
+
+User actions go through Tauri commands (invoke), not events:
+```
+feed(x, y)              — Drop food at screen coordinates
+pause() / resume()      — Toggle simulation
+set_speed(multiplier)   — Simulation speed (0.5x, 1x, 2x, 4x)
+select_fish(id)         — Request detailed info for inspector
+get_stats()             — Request population statistics
+save()                  — Force save
+update_settings(...)    — Change boids params, feeding rate, etc.
+get_species_list()      — Get all detected species with metadata
+get_lineage(fish_id)    — Get ancestry tree for a fish
+place_decoration(...)   — Add/move/remove tank decorations
+```
+
+---
+
+## Boids Algorithm
+
+Every fish follows three foundational rules, evaluated against nearby fish within its perception radius. Perception radius and force weights are **genome-modulated** — each fish has slightly different boids parameters based on its traits.
+
+### Core Rules
+
+**Rule 1: Separation** — Steer away from nearby fish to avoid crowding.
+```
+For each neighbor within separation_radius:
+    repulsion_vector += (my_position - neighbor_position) / distance^2
+Apply: separation_weight (global) * (1.0 + genome.personal_space * 0.5)
+```
+The `1/distance^2` falloff makes separation force spike sharply at close range. Fish that are too close push each other apart hard; fish at the edge of separation radius feel only gentle repulsion.
+
+**Rule 2: Alignment** — Steer to match the heading of nearby fish.
+```
+For each neighbor within alignment_radius:
+    avg_heading += neighbor.velocity.normalize()
+alignment_force = (avg_heading / num_neighbors) - my_velocity.normalize()
+Apply: alignment_weight (global) * genome.school_affinity
+```
+Fish with high `school_affinity` align strongly. Low-affinity fish are more independent.
+
+**Rule 3: Cohesion** — Steer toward the center of mass of nearby fish.
+```
+For each neighbor within cohesion_radius:
+    center_of_mass += neighbor.position
+cohesion_force = (center_of_mass / num_neighbors) - my_position
+Apply: cohesion_weight (global) * genome.school_affinity
+```
+Cohesion and alignment both scale with `school_affinity` so fish with low affinity naturally drift away from schools.
+
+### Species-Aware Boids
+
+The neighbor loop has a **species affinity filter.** Before applying alignment and cohesion, weight each neighbor's contribution by genetic similarity:
+
+```
+affinity = 1.0 - (genome_distance(me, neighbor) / max_genome_distance)
+affinity = affinity.clamp(0.0, 1.0)
+// Use affinity as multiplier on alignment and cohesion contributions
+```
+
+Fish school strongly with genetically similar fish and weakly (or not at all) with dissimilar fish. This is the mechanism that drives speciation — similar fish stick together, reproduce together, and diverge from other groups.
+
+### Additional Forces
+
+**Boundary Avoidance:** Soft steering away from tank walls. Not a hard collision — fish feel a repulsive force that increases as they approach the edge. Uses a margin zone (configurable, default 60px). Force increases quadratically within the margin.
+
+**Obstacle Avoidance:** Same principle as boundary avoidance but applied to decorations (rocks, plants, filter). Fish steer around solid objects with a perception cone ahead of their heading. Uses raycasting: if the fish's projected path intersects an obstacle within N pixels, apply a steering force perpendicular to the heading (choose the side with more open space).
+
+**Hunger Drive:** When `hunger > hunger_threshold`, the fish overrides schooling behavior and steers toward the nearest visible food particle. Hunger force scales with hunger level — a starving fish abandons its school completely. Force: `(food_position - my_position).normalize() * hunger_urgency * genome.speed`.
+
+**Predator Avoidance:** Fish with low aggression flee from fish with high aggression that are significantly larger. Flee force is strong and immediate — takes priority over all boids forces except boundary avoidance. Uses a dedicated "danger radius" that's larger than normal perception.
+
+**Wander Force (Perlin Noise):** A small force that adds organic path variation. NOT random jitter (which looks twitchy). Uses Perlin noise seeded per-fish, sampled at `time * genome.curiosity`. High-curiosity fish have more wandering path variation. The Perlin noise produces smooth, natural-looking deviations.
+
+**Depth Drift:** Fish slowly drift in the z-axis (toward/away from the viewer). This is cosmetic — affects rendering size and order but not x/y physics. Fish near the "front glass" (z=1.0) are rendered larger and brighter. Fish near the "back glass" (z=0.0) are smaller and dimmer. Depth changes are slow and smooth.
+
+**Current/Flow:** Optional gentle water current that biases all fish slightly in one direction. Direction and strength configurable. Creates a more dynamic look. Implemented as a constant force vector added to all fish.
+
+### Velocity Management
+
+**Max speed** is genome-driven: `base_max_speed * genome.speed`. This means fast fish can outrun slow fish.
+
+**Steering limit (max_force):** Caps the total steering force per tick. Prevents instant direction changes. Fish curve into new headings over multiple frames.
+
+**Drag coefficient (0.98):** Each tick, velocity is multiplied by drag. This means fish slow down if no forces are applied (they don't coast forever). It also creates natural speed variation — fish in a school are slightly slower than lone fish because of constant micro-adjustments.
+
+**Acceleration smoothing:** New forces are blended with the previous frame's force: `applied_force = prev_force * 0.3 + new_force * 0.7`. This prevents jittery force spikes.
+
+### Spatial Hashing
+
+The tank is divided into a grid of cells. Cell size = `cohesion_radius` (the largest perception radius). Each fish occupies one cell. Neighbor lookups check the fish's cell + 8 adjacent cells. This reduces the neighbor search from O(n^2) to approximately O(n).
+
+```rust
+struct SpatialGrid {
+    cell_size: f32,             // = cohesion_radius
+    cols: usize,
+    rows: usize,
+    cells: Vec<Vec<u32>>,       // cell index -> list of fish IDs
+}
+```
+
+Rebuild the grid every tick (it's cheap — just clearing vectors and re-inserting). Don't try to incrementally update it; the bookkeeping isn't worth it for 100 fish.
+
+### Boids Tuning Defaults
+
+All of these are configurable at runtime through the settings panel:
+
+```
+separation_weight: 1.5
+alignment_weight: 1.0
+cohesion_weight: 1.0
+separation_radius: 25.0 px
+alignment_radius: 50.0 px
+cohesion_radius: 75.0 px
+base_max_speed: 3.0 px/tick
+max_force: 0.1 (steering limit per tick)
+drag: 0.98
+boundary_margin: 60.0 px
+wander_strength: 0.3
+current_direction: 0.0 (radians, 0 = right)
+current_strength: 0.0 (disabled by default)
+```
+
+---
+
+## Fish Behavior State Machine
+
+Every fish has a current behavior state that modifies which boids forces apply and how the fish is animated. State transitions are checked each simulation tick.
+
+```
+                    ┌──────────────────────────────┐
+                    │                              │
+                    ▼                              │
+┌──────────┐   hunger > 0.6    ┌──────────┐       │
+│ SWIMMING │ ────────────────► │ FORAGING │       │
+│ (idle)   │ ◄──────────────── │          │       │
+└──────────┘   hunger < 0.3    └──────────┘       │
+     │                              │              │
+     │ predator nearby              │ ate food     │
+     ▼                              ▼              │
+┌──────────┐                  ┌──────────┐        │
+│ FLEEING  │                  │ SATIATED │        │
+└──────────┘                  └──────────┘        │
+     │                              │              │
+     │ safe                  compatible mate nearby│
+     │                              ▼              │
+     │                        ┌──────────┐        │
+     └───────────────────────►│ COURTING │────────┘
+                              └──────────┘
+                                    │
+                              spawned offspring
+                                    │
+                                    ▼
+                              (back to SWIMMING)
+
+     Any state ──── health <= 0 ────► DYING (fade out, remove)
+     Any state ──── age >= lifespan ─► DYING
+     Any state ──── energy low ──────► RESTING (near bottom, minimal movement)
+```
+
+### State Details
+
+**SWIMMING:** Default state. Full boids behavior (separation, alignment, cohesion, wander). Fish moves with its school. Gentle tail animation.
+
+**FORAGING:** Activated when hunger exceeds threshold. Schooling forces are reduced by 70%. Fish steers toward nearest visible food. Faster tail animation. If no food is visible, fish searches by wandering more aggressively.
+
+**FLEEING:** Activated when a predator (large, aggressive fish) enters danger radius. All schooling forces are disabled. Fish steers directly away from predator at max speed. Rapid, panicked tail animation. Returns to SWIMMING after predator is outside 2x danger radius.
+
+**SATIATED:** Brief state after eating. Fish slows down by 30%. Schooling forces are normal. Transition to COURTING if a compatible mate is nearby and conditions are met.
+
+**COURTING:** Two compatible fish circle each other in a tightening spiral. Other forces disabled except boundary avoidance. Lasts 3-5 seconds. If successful (random chance based on fertility), spawn offspring. Visual: fish get slightly brighter during courting.
+
+**RESTING:** Activated when energy is low (separate from hunger — energy depletes from sustained fast movement). Fish drifts to the lower third of the tank. Minimal movement, slow tail wag. Recovers energy over time. Old fish rest more.
+
+**DYING:** Terminal state. Fish movement becomes erratic (random forces), then slows. Opacity fades over 2-3 seconds. Fish sinks slightly. On full fade, remove from simulation and log death event.
+
+---
+
+## Genetics System
+
+### The Fish Genome
+
+Every fish has an immutable genome assigned at birth (via inheritance + mutation or random generation for the initial population).
+
+```rust
+struct FishGenome {
+    // === Identity ===
+    id: u32,                        // unique genome ID
+    generation: u32,                // how many generations from the initial population
+    parent_a: Option<u32>,          // genome ID of parent A (None for gen 0)
+    parent_b: Option<u32>,          // genome ID of parent B (None for gen 0)
+    sex: Sex,                       // Male or Female
+
+    // === Appearance ===
+    base_hue: f32,                  // 0.0 - 360.0 (HSL hue, primary body color)
+    saturation: f32,                // 0.3 - 1.0
+    lightness: f32,                 // 0.3 - 0.7
+    body_length: f32,               // 0.6 - 2.0 (size multiplier)
+    body_width: f32,                // 0.5 - 1.5 (roundness multiplier)
+    tail_size: f32,                 // 0.5 - 2.0
+    dorsal_fin_size: f32,           // 0.3 - 1.5
+    pectoral_fin_size: f32,         // 0.3 - 1.5
+    pattern: PatternGene,           // body pattern type
+    pattern_intensity: f32,         // 0.0 - 1.0 (how visible the pattern is)
+    pattern_color_offset: f32,      // 0.0 - 180.0 (hue offset for pattern color)
+    eye_size: f32,                  // 0.5 - 1.5
+
+    // === Behavior ===
+    speed: f32,                     // 0.5 - 2.0 (max speed multiplier)
+    aggression: f32,                // 0.0 - 1.0 (predator tendency)
+    school_affinity: f32,           // 0.0 - 1.0 (schooling strength)
+    curiosity: f32,                 // 0.0 - 1.0 (wander intensity)
+    boldness: f32,                  // 0.0 - 1.0 (inverse of predator flee distance)
+
+    // === Lifecycle ===
+    metabolism: f32,                // 0.5 - 2.0 (hunger rate, affects food need)
+    fertility: f32,                 // 0.3 - 1.0 (reproduction success probability)
+    lifespan_factor: f32,           // 0.5 - 2.0 (base lifespan multiplier)
+    maturity_age: f32,              // 0.3 - 0.7 (fraction of lifespan to reach reproductive age)
+}
+
+enum Sex {
+    Male,
+    Female,
+}
+
+enum PatternGene {
+    Solid,
+    Striped { angle: f32 },         // 0.0 - 180.0 degrees (horizontal, vertical, diagonal)
+    Spotted { density: f32 },       // 0.2 - 1.0 (few large spots vs. many small)
+    Gradient { direction: f32 },    // 0.0 - 360.0 (gradient angle)
+    Bicolor { split: f32 },         // 0.3 - 0.7 (where the color split happens)
+}
+```
+
+### Sexual Dimorphism
+
+Males and females have subtle visual differences derived from their sex gene:
+- **Males:** +10% saturation, +15% fin sizes, slightly more vibrant pattern colors
+- **Females:** +10% body_width when carrying offspring (about to reproduce), slightly larger body_length
+
+These modifiers are applied at render time, not stored in the genome.
+
+### Inheritance
+
+When two fish reproduce, offspring genome is created as follows:
+
+**For each numeric trait:**
+1. **Blend type** — randomly chosen per trait per reproduction event:
+   - **Dominant (60% chance):** Take one parent's value entirely (50/50 which parent)
+   - **Blended (40% chance):** Average of both parents with slight random bias: `(parent_a * w + parent_b * (1-w))` where `w = random(0.3, 0.7)`
+
+2. **Mutation** — after inheritance, each trait has an independent mutation chance:
+   - **No mutation (88%):** Keep inherited value
+   - **Small mutation (10%):** Add Gaussian noise with sigma = 0.05 * trait_range
+   - **Large mutation (2%):** Add Gaussian noise with sigma = 0.2 * trait_range
+
+   Gaussian distribution means small tweaks are far more common than large jumps, which is biologically realistic. The occasional large mutation is what drives real novelty.
+
+3. **Clamp** all values to their valid ranges after mutation.
+
+**For the pattern gene:**
+- 70% chance: inherit one parent's pattern (50/50)
+- 20% chance: inherit pattern but mutate sub-parameters (angle, density, etc.)
+- 10% chance: mutate to a completely different pattern type
+
+**For the sex gene:**
+- 50/50 Male/Female, independent of parents.
+
+### Reproduction Conditions
+
+All of the following must be true:
+1. Fish A and Fish B are within `mating_radius` (30px) of each other
+2. Fish A and Fish B are **opposite sex**
+3. Both fish have `hunger < 0.4` (well-fed)
+4. Both fish have `age_fraction > genome.maturity_age` (sexually mature)
+5. Both fish have `age_fraction < 0.85` (not too old)
+6. Genome distance between A and B is below `species_compatibility_threshold` (too different = can't interbreed)
+7. Population is below carrying capacity
+8. Random roll: `random() < (fish_a.fertility + fish_b.fertility) / 2 * FERTILITY_SCALE`
+9. Neither fish has reproduced in the last N ticks (cooldown)
+
+Offspring spawns at the midpoint between parents.
+
+### Genome Distance
+
+Used for species affinity (schooling) and reproduction compatibility:
+
+```rust
+fn genome_distance(a: &FishGenome, b: &FishGenome) -> f32 {
+    let mut distance = 0.0;
+
+    // Appearance traits (weighted higher — species recognition is visual)
+    distance += (a.base_hue - b.base_hue).abs() / 360.0 * 3.0;  // hue matters most
+    distance += (a.saturation - b.saturation).abs() * 1.5;
+    distance += (a.body_length - b.body_length).abs() / 1.4 * 2.0;
+    distance += (a.body_width - b.body_width).abs() * 1.0;
+    distance += pattern_distance(&a.pattern, &b.pattern) * 2.5;  // pattern type matters a lot
+    distance += (a.pattern_intensity - b.pattern_intensity).abs() * 1.0;
+
+    // Behavior traits (weighted lower)
+    distance += (a.speed - b.speed).abs() / 1.5 * 0.5;
+    distance += (a.aggression - b.aggression).abs() * 0.5;
+    distance += (a.school_affinity - b.school_affinity).abs() * 0.5;
+
+    distance
+}
+```
+
+The weights are tuned so that visually similar fish are considered "same species" even if their behavior traits differ. This matches how speciation looks from the viewer's perspective.
+
+### Speciation Detection
+
+Run every 300 ticks (not every frame — it's expensive and species don't change fast).
+
+**Algorithm:** Agglomerative clustering with genome distance.
+
+1. Compute pairwise genome distances for all living fish
+2. Use single-linkage clustering with a distance threshold of `SPECIES_THRESHOLD`
+3. Any cluster with 3+ members is a "species"
+4. Compare current species to previously detected species (by centroid genome similarity)
+5. If a new cluster doesn't match any existing species → **New species event** → trigger naming via Ollama
+6. If a previously existing species has 0 living members → **Extinction event**
+7. Update species registry in SQLite
+
+For 100 fish, pairwise distances = 4,950 comparisons. This is fine every 300 ticks (~10 seconds).
+
+### Inbreeding Penalty
+
+If `parent_a` and `parent_b` share a grandparent (detectable via lineage table), the offspring has:
+- +50% mutation rate (genetic instability)
+- -15% to lifespan_factor
+- -10% to fertility
+
+This creates evolutionary pressure toward outbreeding and genetic diversity.
+
+---
+
+## Ecosystem Mechanics
+
+### Food System
+
+**Feeding:** Player clicks to drop food at a location. Auto-feeder can also be enabled (drops food at random intervals and positions).
+
+**Food physics:**
+- Pellets drift downward with slight horizontal wobble (sine wave)
+- Fall speed: 0.5 px/tick (slow enough for fish to catch)
+- Food has a **decay timer** (300 ticks). Uneaten food disappears and reduces water quality.
+- Food that reaches the bottom sits on the sand for remaining decay time.
+
+**Eating:**
+- Fish within `eating_radius` (8px) of food and in FORAGING state → consume the food
+- Eating reduces hunger by a fixed amount
+- Eating increments `meals_eaten` counter (tracked for reproduction readiness)
+
+**Auto-feeder:**
+- Configurable in settings (on/off, frequency, amount)
+- Drops 3-5 pellets at random positions along the top of the tank
+- Default frequency: every 600 ticks (~20 seconds at 30Hz)
+
+### Water Quality
+
+A system that creates meaningful trade-offs in tank management. Quality is a single float (0.0 = toxic, 1.0 = pristine).
+
+**Degrades from:**
+- Fish population: each living fish degrades water by `0.00001 * genome.metabolism` per tick
+- Uneaten food: decaying food degrades water by 0.0001 per tick per food particle
+- Fish death: if a dead fish isn't "cleaned up" (auto-removed after fade-out), it degrades water
+- Overfeeding: more food particles than fish can eat → faster degradation
+
+**Improves from:**
+- Natural recovery: +0.00005 per tick (slow baseline recovery, simulates filtration)
+- Plants: each decoration plant improves recovery rate by +0.00002 per tick
+- Low population: recovery outpaces degradation when fish count is low
+
+**Effects of low water quality:**
+- Below 0.6: fish health degrades slowly, colors become slightly muted in rendering
+- Below 0.4: reproduction is blocked, fish become sluggish (max speed reduced by 20%)
+- Below 0.2: fish health degrades rapidly, high mortality
+- At 0.0: all fish die within a few hundred ticks
+
+**Visual indicators:**
+- Water quality affects background tint (pristine = clear blue, poor = greenish/murky)
+- Below 0.5: subtle particle overlay (murky water particles)
+- UI bar shows current water quality with color coding
+
+This system means the player can't just dump infinite food — overfeeding pollutes the water. It also means very large populations are self-limiting even before the hard carrying capacity.
+
+### Predator-Prey Dynamics
+
+**Predation conditions:**
+1. Fish A has `aggression > 0.7`
+2. Fish B has `body_length < fish_a.body_length * 0.6` (must be significantly smaller)
+3. Fish A is within `attack_radius` (15px) of Fish B
+4. Fish A is in SWIMMING or FORAGING state (not fleeing/resting)
+5. Random roll: `random() < fish_a.aggression * 0.1` per tick when in range (not guaranteed)
+
+**On successful predation:**
+- Prey enters DYING state immediately
+- Predator's hunger decreases significantly (more nutritious than food pellets)
+- Log predation event
+
+**Prey defense:**
+- Fish with low aggression AND high speed can outrun predators
+- Fish with high school_affinity school tightly, and predators avoid attacking groups (predation fails if 3+ fish are within the prey's separation_radius — safety in numbers)
+- Fish with high boldness don't flee as far, which is risky but means they don't waste energy fleeing from non-threats
+
+**Ecosystem balance:**
+- If predators dominate, they eat all small fish, then starve (boom-bust cycle)
+- If prey dominate (fast breeders), they deplete food faster, some starve, predators recover
+- Over many generations, equilibrium emerges naturally
+
+### Aging and Death
+
+**Age progression:** Each simulation tick, fish age increments. Max lifespan = `BASE_LIFESPAN * genome.lifespan_factor`. `BASE_LIFESPAN` default = 20,000 ticks (~11 minutes at 30Hz).
+
+**Life stages** (fraction of lifespan):
+- **Juvenile (0.0 - maturity_age):** Smaller rendering (scales up over time). Cannot reproduce. Predators are less likely to target juveniles in a school.
+- **Adult (maturity_age - 0.85):** Full size. Can reproduce.
+- **Elder (0.85 - 1.0):** Slightly slower. Cannot reproduce. Immune system weakens (health degrades faster in poor water).
+
+**Causes of death:**
+1. **Old age:** Age reaches max lifespan → DYING state
+2. **Starvation:** Hunger reaches 1.0 for 200+ consecutive ticks → DYING
+3. **Poor water quality:** Health reaches 0 from water degradation → DYING
+4. **Predation:** Eaten by aggressive fish → DYING immediately
+5. **Disease (future consideration):** Not in v1 but the health system supports it
+
+### Population Dynamics
+
+**Carrying capacity:** Dynamic, not a hard number.
+- `base_capacity = tank_area / 8000` (roughly 1 fish per 80x100 pixel area)
+- Modified by water quality: `effective_capacity = base_capacity * water_quality`
+- When population exceeds effective_capacity, reproduction probability drops to 0
+
+**Natural selection pressures:**
+- **Food scarcity:** Selects for efficient metabolism (low metabolism = needs less food)
+- **Predation:** Selects for speed, schooling, or size (multiple survival strategies)
+- **Water quality:** Selects for low metabolism (less waste production)
+- **Competition:** Dense populations favor fish that are efficient foragers
+
+---
+
+## Visual Design
+
+### Fish Rendering — Bezier Curve Bodies
+
+Fish are NOT ellipses (which look like bubbles). Each fish is rendered using **bezier curves** that form an organic, asymmetric fish shape:
+
+```
+Fish body is defined by 6 control points forming a closed bezier path:
+
+    Dorsal fin
+        │
+    ┌───▲───┐
+   ╱    │    ╲        ← Bezier curves between points
+  ╱     │     ╲
+ ●──────●──────●──► Nose
+  ╲     │     ╱
+   ╲    │    ╱
+    └───▼───┘
+        │
+    Ventral side
+
+The body is wider at the front third and tapers toward the tail.
+```
+
+**Body shape is genome-driven:**
+- `body_length` scales the nose-to-tail distance
+- `body_width` scales the max width (at roughly 1/3 from nose)
+- The body is always slightly asymmetric (wider on top than bottom) for a natural look
+
+**Fins:**
+- **Tail fin:** Triangle/fan shape behind the body. Size from `tail_size`. Oscillates with swimming.
+- **Dorsal fin:** Arc on top of the body. Size from `dorsal_fin_size`. Sways gently.
+- **Pectoral fins:** Two small fins on the sides, near the front. Size from `pectoral_fin_size`. Flap during movement.
+
+**Eye:** Circle near the front of the body, slightly above center. Size from `eye_size`. Has a pupil (small dark circle within).
+
+**Pattern rendering:**
+- **Solid:** Single color from genome
+- **Striped:** Lines across the body at the angle specified by `stripe.angle`. Line color = `base_hue + pattern_color_offset`. Line opacity = `pattern_intensity`.
+- **Spotted:** Circles placed on the body. Count and size from `spotted.density`. Color offset from genome.
+- **Gradient:** Color shifts from `base_hue` to `base_hue + pattern_color_offset` along the direction specified.
+- **Bicolor:** Body is split at `bicolor.split` fraction from nose. Front half = base color, back half = offset color.
+
+### Sprite Caching
+
+**Critical performance optimization.** Fish genomes are immutable — a fish's appearance never changes after birth.
+
+1. When a fish is born, pre-render its body (at a reference size and heading) to an **OffscreenCanvas**.
+2. Store the resulting ImageBitmap keyed by genome_id.
+3. Each frame: draw the cached sprite at the fish's current position, rotated to its heading, scaled by z-depth.
+4. Only re-render the sprite if... never. Genomes don't change. The sprite is rendered once.
+
+**Animation is applied via transforms, not re-rendering:**
+- Tail oscillation: draw the tail separately with a rotation transform
+- Body wobble: slight sine-wave rotation on the body sprite
+- Fin flapping: small rotation on fin sub-sprites
+
+This means drawing 100 fish is 100 `drawImage` calls with transforms — trivially fast for Canvas2D.
+
+**Size variants:** Pre-render each fish at 3 sizes (for z-depth layers: back, middle, front). This avoids blurry scaling on every frame.
+
+### Z-Depth System
+
+Fish have a `z` coordinate (0.0 = back glass, 1.0 = front glass) that affects rendering:
+
+- **Render order:** Fish with lower z are drawn first (further back = behind)
+- **Size scaling:** `render_scale = 0.7 + z * 0.3` (back fish are 70% size, front fish are 100%)
+- **Brightness:** `brightness = 0.7 + z * 0.3` (back fish are dimmer)
+- **Blur (optional):** Fish at z < 0.2 have a subtle blur (depth of field)
+
+Fish slowly drift in z over time (depth drift in boids section). They don't teleport between layers.
+
+### Swimming Animation
+
+**Body oscillation:** The fish body rotates slightly side-to-side following a sine wave: `rotation_offset = sin(time * speed_factor) * 0.05 radians`. Faster fish oscillate faster.
+
+**Tail wag:** Tail rotates with higher amplitude and frequency than the body: `tail_rotation = sin(time * speed_factor * 2) * 0.3 radians`. The tail leads the oscillation (it's what propels the fish).
+
+**Turning:** When the fish's heading changes, the body CURVES into the turn. The heading change is applied gradually over multiple frames with easing. During a turn, the body arc increases (fish bends in the direction of the turn).
+
+**Speed variation:** Fish don't maintain constant speed. Speed oscillates slightly (Perlin noise), creating natural-looking acceleration and deceleration.
+
+**State-specific animations:**
+- FORAGING: Faster tail wag, more erratic movement
+- FLEEING: Maximum tail frequency, body stretched out
+- RESTING: Minimal tail movement, gentle drift
+- COURTING: Circling motion with exaggerated fin display
+- DYING: Erratic tail, fish lists to one side, drifts downward
+
+### Water and Environment
+
+**Background:** Gradient from deep navy (#0a1628) at the bottom to medium blue (#1a3a5c) at the top. The gradient is slightly more green-shifted when water quality is low.
+
+**Caustic light effect:** Animated light pattern on the tank floor and lower walls. Implemented as a semi-transparent animated overlay. Uses Perlin noise to generate shifting light patches. Subtle — should be noticeable but not distracting.
+
+**Bubbles:** Rise from specific points (filter location, plant locations). Each bubble is a small circle with a highlight. Physics: rise at constant speed with horizontal sine-wave drift. Bubbles have random sizes (2-6px). Pop at the surface with a tiny particle burst. Spawn rate is configurable.
+
+**Light rays:** Diagonal shafts of light from the top, fanning downward. Semi-transparent white/blue gradients. Slowly shift position over time. 2-3 rays visible at a time.
+
+**Floating particles:** Tiny specs (1-2px) drifting slowly through the water. Some rise, some fall, some drift horizontally. Very low opacity (0.1-0.2). Creates sense of depth and water volume.
+
+**Surface:** The water surface at the top of the tank has a subtle wave animation. Slight distortion effect on anything near the surface.
+
+**Plants/Seaweed:** Anchored at the bottom. Bodies sway with a sine wave (different phase per plant). Amplitude affected by current strength. 3-4 visual varieties (tall thin, bushy, kelp-like, ground cover).
+
+**Rocks:** Static decorations at the bottom. Various shapes and sizes. Fish avoid them (obstacle avoidance). Provide visual anchoring.
+
+**Sand floor:** Textured gradient at the bottom (tan/beige). Subtle grain pattern.
+
+**Day/Night Cycle:** Background brightness shifts over real-world time. Dawn (6am) → bright day → dusk (6pm) → dim night → dawn. The cycle affects:
+- Background brightness (±20%)
+- Caustic light intensity (brighter during day)
+- Light ray visibility (only during day)
+- Fish behavior: at night, more fish enter RESTING state
+
+---
+
+## Audio System
+
+Sound is core to the meditative experience, not a stretch goal.
+
+**Ambient layer (always playing):**
+- Underwater ambient loop: low-frequency water hum, distant bubbling
+- Volume: configurable, default 30%
+- Uses Web Audio API with a looping AudioBuffer
+
+**Dynamic sounds (triggered by events):**
+- **Bubble pop:** Soft, tiny pop sound when bubbles reach surface. Randomized pitch ±10%.
+- **Feeding:** Gentle splash/plop when food is dropped. Soft crunch when fish eat.
+- **Birth:** Quiet, pleasant chime when offspring spawns.
+- **Death:** Very subtle low tone. Nothing jarring.
+- **Species discovery:** Distinct notification chime (slightly louder than other events).
+- **UI interactions:** Soft clicks for button presses.
+
+**Spatial audio:** Sounds are panned left/right based on the event's x-position in the tank. Subtle effect that adds immersion.
+
+**Master controls:**
+- Master volume slider
+- Ambient on/off toggle
+- Event sounds on/off toggle
+- Individual volume controls in settings
+
+---
+
+## UI Layout and Components
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│  DeepTank  │ Gen: 47 │ Pop: 63/87 │ Species: 4 │ Water: ████░ │
+├───────────────────────────────────────────────────────┬───────────┤
+│                                                       │           │
+│                                                       │ INSPECTOR │
+│                                                       │           │
+│              AQUARIUM VIEWPORT                        │ ┌───────┐ │
+│              (Full Canvas)                            │ │ [fish] │ │
+│                                                       │ └───────┘ │
+│                                                       │ Ruby #42  │
+│                                                       │ Gen: 12   │
+│                                                       │ Female    │
+│                                                       │ Age: Adult│
+│                                                       │ State: Sw │
+│                                                       │ ───────── │
+│                                                       │ GENOME    │
+│                                                       │ Hue: 210° │
+│                                                       │ Speed: 1.3│
+│                                                       │ Pattern:  │
+│                                                       │  Spotted  │
+│                                                       │ ───────── │
+│                                                       │ STATUS    │
+│                                                       │ Hunger:██ │
+│                                                       │ Health:███│
+│                                                       │ Energy:██ │
+│                                                       │ ───────── │
+│                                                       │ LINEAGE   │
+│                                                       │ Parents:  │
+│                                                       │  #31,#28  │
+│                                                       │ Children:3│
+│                                                       │ Species:  │
+│                                                       │  Cerulean │
+│                                                       │  Drifter  │
+├───────────────────────────────────────────────────────┴───────────┤
+│ [Feed] [Pause/Play] [Speed ▾] [Stats] [Journal] [Settings] [🔇] │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+### Top Bar
+- **DeepTank** logo/wordmark
+- **Generation counter:** Highest generation number among living fish
+- **Population:** Current count / current effective carrying capacity
+- **Species count:** Number of detected species
+- **Water quality bar:** Visual indicator with color coding (green/yellow/red)
+
+### Aquarium Viewport
+- Full canvas, takes maximum available space
+- Click on empty space → drop food
+- Click on a fish → select it (shows in inspector)
+- Hover on a fish → subtle highlight glow
+- Right-click → context menu (inspect, follow camera, mark as favorite)
+
+### Inspector Panel (Right Side)
+- Slides in when a fish is selected, slides out when deselected
+- **Fish preview:** Small canvas showing just this fish, rotating slowly
+- **Identity:** Name (if species is named), ID, generation, sex
+- **Life stage:** Juvenile / Adult / Elder, with age bar
+- **Behavior state:** Current state (SWIMMING, FORAGING, etc.)
+- **Genome traits:** All heritable traits shown as labeled bars
+- **Status bars:** Hunger, Health, Energy (real-time updating)
+- **Lineage:** Parent IDs (clickable to select parent if alive), child count, species name
+- **"Follow" button:** Camera centers on this fish (viewport follows it)
+
+### Bottom Toolbar
+- **Feed:** Click to enter feeding mode (next click on tank drops food). Or shortcut: hold F and click.
+- **Pause/Play:** Toggle simulation. Visual indication of paused state (dimmed tank, "PAUSED" overlay).
+- **Speed:** Dropdown — 0.5x, 1x, 2x, 4x simulation speed.
+- **Stats:** Opens the stats overlay panel.
+- **Journal:** Opens the Ollama-generated aquarium journal.
+- **Settings:** Opens the settings panel.
+- **Volume:** Quick-toggle audio mute.
+
+### Stats Panel (Overlay)
+Opens as a slide-up panel or modal over the bottom half of the viewport:
+- **Population graph:** Line chart of population over time (ticks or real-time). Color-coded by species.
+- **Trait evolution:** Line charts showing average trait values (hue, speed, size, aggression) over generations.
+- **Species timeline:** Horizontal bar chart showing when each species existed (appeared → extinct or present).
+- **Distribution:** Current trait distributions as histograms.
+- **Records:** Oldest living fish, fastest fish, most offspring, largest fish, most generations.
+- **Event log:** Scrollable list of notable events with timestamps.
+
+### Settings Panel (Overlay)
+- **Simulation:** Boids tuning parameters (sliders), carrying capacity, food decay rate
+- **Auto-feeder:** Toggle, frequency, amount
+- **Audio:** Master volume, ambient toggle, event sounds toggle
+- **Visual:** Day/night cycle toggle, particle density, bubble rate
+- **Tank:** Background theme selection (but only one theme for now — extensible later)
+- **Decorations:** Manage placed decorations (add/remove/reposition rocks, plants)
+- **Data:** Manual save, export tank data, reset tank (with confirmation)
+
+### Keyboard Shortcuts
+```
+Space       — Pause / Resume
+F           — Feed mode (click to drop food)
+Escape      — Deselect fish / close panels
+1-4         — Simulation speed (1x, 2x, 4x, 0.5x)
+S           — Toggle stats panel
+J           — Toggle journal
+M           — Mute/unmute audio
+Ctrl+S      — Force save
+Tab         — Cycle through fish (select next)
+```
+
+### Notification Toasts
+In-app toast notifications for notable events:
+- "New species detected: *Cerulean Drifters*" (with species color swatch)
+- "Extinction: *Golden Spots* — no living members remain"
+- "Population milestone: 50 fish!"
+- "Water quality warning: below 40%"
+- "Elder fish *Ruby* has died of old age (Gen 12, Age 847)"
+
+Toasts appear in the top-right corner, auto-dismiss after 5 seconds. Clickable to see details. Stack if multiple appear.
+
+---
+
+## Persistence — SQLite Schema
+
+Use `rusqlite` with **WAL mode** for non-blocking writes. Auto-save every 900 ticks (~30 seconds at 30Hz).
+
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+
+-- Aquarium metadata
+CREATE TABLE aquarium (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    tick_count INTEGER NOT NULL DEFAULT 0,
+    water_quality REAL NOT NULL DEFAULT 1.0,
+    last_saved_at TEXT NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Settings (separate from aquarium state)
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- Fish genomes (immutable after creation, never deleted — historical record)
+CREATE TABLE genomes (
+    id INTEGER PRIMARY KEY,
+    generation INTEGER NOT NULL,
+    parent_a INTEGER REFERENCES genomes(id),
+    parent_b INTEGER REFERENCES genomes(id),
+    sex TEXT NOT NULL CHECK(sex IN ('male', 'female')),
+    -- Appearance
+    base_hue REAL NOT NULL,
+    saturation REAL NOT NULL,
+    lightness REAL NOT NULL,
+    body_length REAL NOT NULL,
+    body_width REAL NOT NULL,
+    tail_size REAL NOT NULL,
+    dorsal_fin_size REAL NOT NULL,
+    pectoral_fin_size REAL NOT NULL,
+    pattern_type TEXT NOT NULL,
+    pattern_data TEXT,              -- JSON for pattern sub-params (angle, density, etc.)
+    pattern_intensity REAL NOT NULL,
+    pattern_color_offset REAL NOT NULL,
+    eye_size REAL NOT NULL,
+    -- Behavior
+    speed REAL NOT NULL,
+    aggression REAL NOT NULL,
+    school_affinity REAL NOT NULL,
+    curiosity REAL NOT NULL,
+    boldness REAL NOT NULL,
+    -- Lifecycle
+    metabolism REAL NOT NULL,
+    fertility REAL NOT NULL,
+    lifespan_factor REAL NOT NULL,
+    maturity_age REAL NOT NULL,
+    -- Metadata
+    born_at_tick INTEGER NOT NULL,
+    species_id INTEGER REFERENCES species(id)
+);
+
+CREATE INDEX idx_genomes_generation ON genomes(generation);
+CREATE INDEX idx_genomes_species ON genomes(species_id);
+
+-- Living fish (mutable state — only living fish are here)
+CREATE TABLE fish (
+    id INTEGER PRIMARY KEY,
+    genome_id INTEGER NOT NULL REFERENCES genomes(id),
+    position_x REAL NOT NULL,
+    position_y REAL NOT NULL,
+    position_z REAL NOT NULL,
+    velocity_x REAL NOT NULL,
+    velocity_y REAL NOT NULL,
+    heading REAL NOT NULL,
+    age INTEGER NOT NULL DEFAULT 0,
+    hunger REAL NOT NULL DEFAULT 0.3,
+    health REAL NOT NULL DEFAULT 1.0,
+    energy REAL NOT NULL DEFAULT 1.0,
+    behavior_state TEXT NOT NULL DEFAULT 'swimming',
+    meals_eaten INTEGER NOT NULL DEFAULT 0,
+    last_reproduced_tick INTEGER DEFAULT NULL,
+    is_alive INTEGER NOT NULL DEFAULT 1
+);
+
+-- Species registry
+CREATE TABLE species (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,                      -- Ollama-generated name (null until named)
+    description TEXT,               -- Ollama-generated description
+    discovered_at_tick INTEGER NOT NULL,
+    extinct_at_tick INTEGER,        -- null if still alive
+    centroid_hue REAL,              -- average traits at time of discovery
+    centroid_speed REAL,
+    centroid_size REAL,
+    centroid_pattern TEXT,
+    member_count_at_discovery INTEGER
+);
+
+-- Population snapshots (for stats graphs)
+CREATE TABLE population_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick INTEGER NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    population INTEGER NOT NULL,
+    species_count INTEGER NOT NULL,
+    water_quality REAL NOT NULL,
+    avg_hue REAL,
+    avg_speed REAL,
+    avg_size REAL,
+    avg_aggression REAL,
+    avg_metabolism REAL,
+    births_since_last INTEGER NOT NULL DEFAULT 0,
+    deaths_since_last INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_snapshots_tick ON population_snapshots(tick);
+
+-- Event log
+CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick INTEGER NOT NULL,
+    event_type TEXT NOT NULL,       -- birth, death, new_species, extinction, milestone, predation
+    subject_fish_id INTEGER,       -- the fish involved (if applicable)
+    subject_species_id INTEGER,    -- the species involved (if applicable)
+    description TEXT NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_events_type ON events(event_type);
+CREATE INDEX idx_events_tick ON events(tick);
+
+-- Aquarium journal entries (Ollama-generated)
+CREATE TABLE journal_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tick INTEGER NOT NULL,
+    entry_text TEXT NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Tank decorations (placed by user)
+CREATE TABLE decorations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decoration_type TEXT NOT NULL,  -- rock_small, rock_large, plant_tall, plant_bushy, etc.
+    position_x REAL NOT NULL,
+    position_y REAL NOT NULL,
+    scale REAL NOT NULL DEFAULT 1.0,
+    flip_x INTEGER NOT NULL DEFAULT 0
+);
+
+-- Schema version for migrations
+CREATE TABLE schema_version (
+    version INTEGER PRIMARY KEY
+);
+INSERT INTO schema_version VALUES (1);
+```
+
+### Migration System
+
+On app startup:
+1. Check `schema_version` table
+2. If version < current code version, run migration scripts in order
+3. Migrations are Rust functions that execute SQL ALTER/CREATE statements
+4. Each migration bumps the version number
+
+### Auto-Save Strategy
+
+- Save every 900 ticks (~30 seconds)
+- On save: wrap in a transaction, serialize all living fish states, update aquarium tick count
+- On shutdown: save immediately before closing
+- On startup: load all fish from `fish` table, load aquarium metadata, rebuild spatial grid, resume simulation
+- **Recovery:** If the database is corrupted (detected by SQLite integrity check on startup), start a fresh tank and log an error. Do not crash.
+
+---
+
+## Ollama Integration
+
+First-class feature, not optional. All Ollama calls are asynchronous and non-blocking — the simulation never waits for LLM responses. If Ollama is unavailable, features degrade gracefully (no names, no journal entries, use fallback template strings for notifications).
+
+### Species Naming
+
+When a new species is detected, queue a naming request:
+
+```
+System: You are a marine biologist writing field notes about an evolving digital aquarium.
+Generate a species name (genus + species in Latin-style, italicized) and a one-sentence
+description. Keep it concise and scientific but with personality.
+
+User: A new fish species has been detected with these average traits:
+- Color: bright red (hue ~10°), high saturation
+- Body: small (0.7x), slightly elongated
+- Pattern: spotted with medium density
+- Speed: fast (1.6x)
+- Behavior: low aggression, high schooling affinity
+- Population: 8 members, generation 15
+
+Respond in JSON: {"name": "...", "description": "..."}
+```
+
+Store the name and description in the `species` table. Display in inspector and notifications.
+
+### Aquarium Journal
+
+Every 3000 ticks (~100 seconds), generate a journal entry:
+
+```
+System: You are a marine biologist keeping a daily log of a digital aquarium
+that evolves through genetic algorithms. Write a brief, observational field note
+(2-3 sentences) about the current state. Be specific about species names and
+population trends. Write in first person, present tense.
+
+User: Current aquarium state:
+- Tick: 45000 (Day 25)
+- Population: 67 fish
+- Water quality: 0.82
+- Species: "Rubra velocitas" (23 members, thriving), "Cerulean Drifters" (31 members, stable),
+  "Golden Spots" (8 members, declining), unnamed cluster (5 members, new)
+- Recent events: 12 births, 4 deaths (2 old age, 1 starvation, 1 predation)
+- Notable: average aggression has increased 15% over last 5000 ticks
+```
+
+Journal entries are stored in SQLite and viewable in the Journal panel (scrollable list, most recent first).
+
+### Discovery Notifications
+
+When notable events happen, generate a brief notification string via Ollama. Fallback to template strings if Ollama is unavailable:
+- New species: "New species detected: [name]" or "A new group of [color] [pattern] fish has formed"
+- Extinction: "[Species name] has gone extinct" or "A species has disappeared from the tank"
+- Milestone: "Population reached [N]!"
+
+### Graceful Degradation
+
+If Ollama is not running or not installed:
+- Species get auto-generated names based on traits: e.g., "Red-Spotted Schoolers"
+- Journal entries are not generated (journal panel shows "Connect Ollama for aquarium journal entries")
+- Notifications use template strings
+- A settings toggle allows the user to enable/disable Ollama features
+- Connection status shown in settings (green dot = connected, red = unavailable)
+
+---
+
+## System Tray Mode
+
+DeepTank can minimize to the system tray (macOS menu bar) and optionally show as a small floating overlay.
+
+**Menu bar icon:** Small fish icon in the macOS menu bar. Click to show a dropdown:
+- "Show Aquarium" — restore the main window
+- "Pop: 63 | Gen: 47" — current stats (read-only)
+- "Feed" — drop food without opening the window
+- "Pause / Resume"
+- "Quit DeepTank"
+
+**Floating mini-view (optional):** A small (300x200) always-on-top window showing a simplified view of the tank. No UI chrome, just the aquarium canvas. Can be dragged anywhere on screen. Toggled from the tray menu.
+
+**Background simulation:** When the main window is hidden, the Rust simulation continues running. Canvas rendering is paused (saves CPU). On restore, the canvas immediately shows the current state (no "catching up" animation).
+
+---
+
+## Configuration
+
+All tunable parameters are centralized in a `SimulationConfig` struct that can be modified at runtime through the settings panel and persisted to the `settings` table.
+
+```rust
+struct SimulationConfig {
+    // Boids
+    separation_weight: f32,         // default 1.5
+    alignment_weight: f32,          // default 1.0
+    cohesion_weight: f32,           // default 1.0
+    separation_radius: f32,         // default 25.0
+    alignment_radius: f32,          // default 50.0
+    cohesion_radius: f32,           // default 75.0
+    base_max_speed: f32,            // default 3.0
+    max_force: f32,                 // default 0.1
+    drag: f32,                      // default 0.98
+    boundary_margin: f32,           // default 60.0
+    wander_strength: f32,           // default 0.3
+
+    // Ecosystem
+    base_carrying_capacity: u32,    // default based on tank size
+    hunger_rate: f32,               // default 0.0005 per tick
+    food_decay_ticks: u32,          // default 300
+    fertility_scale: f32,           // default 0.05
+    reproduction_cooldown: u32,     // default 300 ticks
+    mutation_rate_small: f32,       // default 0.10
+    mutation_rate_large: f32,       // default 0.02
+    species_threshold: f32,         // default 2.5
+    species_min_members: u32,       // default 3
+    predation_size_ratio: f32,      // default 0.6
+    inbreeding_check_depth: u32,    // default 2 (grandparents)
+
+    // Water
+    water_degradation_per_fish: f32, // default 0.00001
+    water_recovery_rate: f32,        // default 0.00005
+    plant_recovery_bonus: f32,       // default 0.00002
+
+    // Environment
+    current_direction: f32,         // default 0.0 (radians)
+    current_strength: f32,          // default 0.0
+    day_night_cycle: bool,          // default true
+    bubble_rate: f32,               // default 1.0 (multiplier)
+    particle_density: f32,          // default 1.0 (multiplier)
+
+    // Auto-feeder
+    auto_feed_enabled: bool,        // default false
+    auto_feed_interval: u32,        // default 600 ticks
+    auto_feed_amount: u32,          // default 4 pellets
+
+    // Persistence
+    auto_save_interval: u32,        // default 900 ticks
+    snapshot_interval: u32,         // default 300 ticks
+
+    // Ollama
+    ollama_enabled: bool,           // default true
+    ollama_url: String,             // default "http://localhost:11434"
+    ollama_model: String,           // default "llama3.2"
+
+    // Audio
+    master_volume: f32,             // default 0.3
+    ambient_enabled: bool,          // default true
+    event_sounds_enabled: bool,     // default true
+}
+```
+
+---
+
+## Initial Population
+
+On first launch (fresh tank), seed with 15-20 fish with randomized genomes. The initial population should have deliberate diversity:
+
+- Distribute `base_hue` across the color wheel (not all random — ensure at least warm, cool, and neutral colors)
+- Vary `body_length` from small to large
+- Mix of patterns (at least 3 different types)
+- 50/50 sex ratio
+- Moderate aggression (0.2-0.5) — don't start with apex predators
+- Varied `school_affinity` (some loners, some schoolers)
+- All fish start at age 0, hunger 0.3 (slightly peckish), health 1.0
+
+Place fish at random positions with random headings. Let the boids algorithm sort them into schools.
+
+---
+
+## Error Handling and Recovery
+
+**SQLite corruption:** On startup, run `PRAGMA integrity_check`. If it fails, back up the corrupted file, create a fresh database, seed initial population, and show a notification to the user.
+
+**Ollama unavailable:** All Ollama features degrade gracefully with template fallbacks. No error popups — just a status indicator in settings.
+
+**Simulation panic:** If the Rust simulation panics (shouldn't happen, but), catch it with `std::panic::catch_unwind`, log the error, save current state if possible, and restart the simulation loop. Show a toast notification.
+
+**Canvas rendering failure:** If the canvas context is lost, attempt to restore it. If that fails, show an error message in the UI.
+
+**Window state:** Remember window position and size. Restore on next launch. If the saved position is off-screen (external monitor removed), reset to center of primary display.
+
+---
+
+## Future Extensibility (Documented but Not Built)
+
+These are NOT in scope but the architecture should not prevent them:
+
+- **Multiple tank environments** (tropical, deep sea, pond) — different backgrounds, decorations, initial populations. The simulation engine is environment-agnostic.
+- **Tank decorations shop** — drag-and-drop placement of rocks, plants, castles, etc. The `decorations` table already supports this.
+- **Family tree viewer** — visual genealogy for any fish. The `genomes` table with `parent_a/parent_b` already supports this.
+- **Time lapse mode** — replay evolution at high speed using population snapshots and event log.
+- **Screenshot/export** — render current tank state to a PNG. Canvas `toDataURL()` makes this trivial.
+- **Disease system** — contagious diseases that spread between fish, with genetic resistance traits.
+- **Multiple food types** — flakes (stay at surface), pellets (sink), live food (moves around).
+- **Tank sharing** — export/import tank state as a file. The SQLite database IS the save file.
+
+---
+
+## Technical Dependencies
+
+```toml
+# Rust (Cargo.toml)
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "shell-open"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+rmp-serde = "1"              # MessagePack for fast IPC serialization
+noise = "0.9"                # Perlin noise for wander behavior
+rand = "0.8"
+rand_distr = "0.4"           # Gaussian distribution for mutations
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }  # For Ollama HTTP API
+log = "0.4"
+env_logger = "0.11"
+```
+
+```json
+// package.json (key dependencies)
+{
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
+```
+
+---
+
+## Success Criteria
+
+- [ ] Fish swim with convincing flocking behavior — schools form, split, and merge organically
+- [ ] Boids parameters are genome-modulated — each fish behaves slightly differently
+- [ ] Genetic traits visibly affect fish appearance (color, size, pattern, fins)
+- [ ] Bezier-curve fish bodies look organic, not like ellipses
+- [ ] Reproduction produces visible new variants across generations
+- [ ] Emergent speciation: distinct clusters of similar fish appear naturally without design
+- [ ] Species detection works — clusters are identified, named (via Ollama), tracked
+- [ ] Population dynamics create interesting oscillations (boom-bust, equilibrium, speciation events)
+- [ ] Predator-prey interactions create ecological pressure and strategic diversity
+- [ ] Water quality system creates meaningful tank management trade-offs
+- [ ] Fish behavior state machine produces believable, varied behavior
+- [ ] Persistent: close app, reopen, fish are there and evolving
+- [ ] Auto-save is reliable and performant (no frame drops during save)
+- [ ] Stats panel shows population history, trait evolution, species timeline
+- [ ] Inspector panel gives deep insight into any individual fish
+- [ ] Ambient audio creates a calming, immersive atmosphere
+- [ ] Ollama integration provides charming species names and journal entries
+- [ ] System tray mode allows background running with quick access
+- [ ] Smooth 60fps rendering with 100 fish using sprite caching
+- [ ] The aquarium is genuinely beautiful enough to leave running on your desktop
+- [ ] Day/night cycle and water effects create a living, breathing environment
