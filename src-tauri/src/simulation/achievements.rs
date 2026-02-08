@@ -76,3 +76,105 @@ pub fn check_achievements(
     }
     newly_unlocked
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_achievements_count() {
+        let achievements = default_achievements();
+        assert_eq!(achievements.len(), 15);
+    }
+
+    #[test]
+    fn all_achievements_start_locked() {
+        let achievements = default_achievements();
+        for a in &achievements {
+            assert!(a.unlocked_at_tick.is_none(), "{} should start locked", a.id);
+        }
+    }
+
+    #[test]
+    fn unique_achievement_ids() {
+        let achievements = default_achievements();
+        let mut ids: Vec<&str> = achievements.iter().map(|a| a.id.as_str()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), achievements.len(), "Achievement IDs must be unique");
+    }
+
+    #[test]
+    fn first_birth_unlocks() {
+        let mut achievements = default_achievements();
+        let unlocked = check_achievements(
+            &mut achievements, 100, 0, 0, 0, 1.0, 0,
+            true, false, false, false,
+            0.0, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(unlocked.contains(&"It's Alive!".to_string()));
+    }
+
+    #[test]
+    fn population_50_unlocks() {
+        let mut achievements = default_achievements();
+        let unlocked = check_achievements(
+            &mut achievements, 100, 50, 0, 0, 1.0, 0,
+            false, false, false, false,
+            0.0, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(unlocked.contains(&"Thriving Colony".to_string()));
+    }
+
+    #[test]
+    fn achievement_only_unlocks_once() {
+        let mut achievements = default_achievements();
+        let unlocked1 = check_achievements(
+            &mut achievements, 100, 50, 0, 0, 1.0, 0,
+            true, false, false, false,
+            0.0, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(!unlocked1.is_empty());
+
+        // Call again with same conditions — should NOT unlock again
+        let unlocked2 = check_achievements(
+            &mut achievements, 200, 50, 0, 0, 1.0, 0,
+            true, false, false, false,
+            0.0, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(unlocked2.is_empty(), "Already-unlocked achievements shouldn't re-trigger");
+    }
+
+    #[test]
+    fn apex_predator_unlocks() {
+        let mut achievements = default_achievements();
+        let unlocked = check_achievements(
+            &mut achievements, 100, 10, 0, 0, 1.0, 0,
+            false, false, false, false,
+            0.96, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(unlocked.contains(&"Apex Predator".to_string()));
+    }
+
+    #[test]
+    fn crystal_clear_unlocks() {
+        let mut achievements = default_achievements();
+        let unlocked = check_achievements(
+            &mut achievements, 100, 10, 0, 0, 0.96, 1001,
+            false, false, false, false,
+            0.0, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(unlocked.contains(&"Crystal Clear".to_string()));
+    }
+
+    #[test]
+    fn full_tank_unlocks() {
+        let mut achievements = default_achievements();
+        let unlocked = check_achievements(
+            &mut achievements, 100, 100, 0, 0, 1.0, 0,
+            false, false, false, false,
+            0.0, 0.0, 0, 1.0, 1.0, 100,
+        );
+        assert!(unlocked.contains(&"Standing Room Only".to_string()));
+    }
+}

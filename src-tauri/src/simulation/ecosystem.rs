@@ -1401,3 +1401,234 @@ fn find_root(cluster: &[usize], mut i: usize) -> usize {
     }
     i
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::config::SimulationConfig;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn seeded_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
+    // --- FoodType ---
+
+    #[test]
+    fn food_nutrition_values() {
+        assert!((FoodType::Flake.nutrition() - 0.2).abs() < 0.01);
+        assert!((FoodType::Pellet.nutrition() - 0.3).abs() < 0.01);
+        assert!((FoodType::LiveFood.nutrition() - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn food_type_str_roundtrip() {
+        assert_eq!(FoodType::from_str("flake").as_str(), "flake");
+        assert_eq!(FoodType::from_str("pellet").as_str(), "pellet");
+        assert_eq!(FoodType::from_str("live").as_str(), "live");
+        // Unknown defaults to pellet
+        assert_eq!(FoodType::from_str("unknown").as_str(), "pellet");
+    }
+
+    // --- FoodParticle ---
+
+    #[test]
+    fn pellet_sinks_to_floor() {
+        let config = SimulationConfig::default();
+        let mut food = FoodParticle::new(100.0, 5.0);
+        assert!(!food.on_floor);
+
+        for tick in 0..5000 {
+            food.update(&config, tick);
+            if food.on_floor { break; }
+        }
+        assert!(food.on_floor, "Pellet should reach floor");
+        assert!((food.y - (config.tank_height - 30.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn flake_sinks_slower_than_pellet() {
+        let config = SimulationConfig::default();
+        let mut flake = FoodParticle::new_typed(100.0, 5.0, FoodType::Flake);
+        let mut pellet = FoodParticle::new(100.0, 5.0);
+
+        for tick in 0..100 {
+            flake.update(&config, tick);
+            pellet.update(&config, tick);
+        }
+        assert!(flake.y < pellet.y, "Flake y {} should be above pellet y {}", flake.y, pellet.y);
+    }
+
+    #[test]
+    fn food_expires_after_decay_ticks() {
+        let config = SimulationConfig::default();
+        let mut food = FoodParticle::new(100.0, 5.0);
+        assert!(!food.is_expired(&config));
+
+        for tick in 0..config.food_decay_ticks {
+            food.update(&config, tick as u64);
+        }
+        assert!(food.is_expired(&config));
+    }
+
+    #[test]
+    fn live_food_never_settles() {
+        let config = SimulationConfig::default();
+        let mut food = FoodParticle::new_typed(400.0, 400.0, FoodType::LiveFood);
+
+        for tick in 0..2000 {
+            food.update(&config, tick);
+        }
+        assert!(!food.on_floor, "LiveFood should never settle on floor");
+        // Should stay in bounds
+        assert!(food.x >= 10.0 && food.x <= config.tank_width - 10.0);
+        assert!(food.y >= 10.0 && food.y <= config.tank_height - 40.0);
+    }
+
+    // --- Bubble ---
+
+    #[test]
+    fn bubble_rises_and_pops() {
+        let mut rng = seeded_rng();
+        let mut bubble = Bubble::new(100.0, 500.0, &mut rng);
+        assert!(!bubble.is_popped());
+
+        for tick in 0..2000 {
+            bubble.update(tick);
+            if bubble.is_popped() { break; }
+        }
+        assert!(bubble.is_popped(), "Bubble should pop before y=10");
+    }
+
+    // --- DecorationType ---
+
+    #[test]
+    fn plant_types_are_plants() {
+        assert!(DecorationType::TallPlant.is_plant());
+        assert!(DecorationType::ShortPlant.is_plant());
+        assert!(!DecorationType::Rock.is_plant());
+        assert!(!DecorationType::Coral.is_plant());
+    }
+
+    #[test]
+    fn decoration_type_str_roundtrip() {
+        let types = [
+            DecorationType::Rock,
+            DecorationType::TallPlant,
+            DecorationType::ShortPlant,
+            DecorationType::Coral,
+        ];
+        for dt in &types {
+            let s = dt.as_str();
+            let parsed = DecorationType::from_str(s);
+            assert_eq!(parsed.as_str(), s);
+        }
+    }
+
+    #[test]
+    fn obstacle_radii_positive() {
+        assert!(DecorationType::Rock.obstacle_radius() > 0.0);
+        assert!(DecorationType::TallPlant.obstacle_radius() > 0.0);
+        assert!(DecorationType::ShortPlant.obstacle_radius() > 0.0);
+        assert!(DecorationType::Coral.obstacle_radius() > 0.0);
+    }
+
+    // --- EcosystemManager ---
+
+    #[test]
+    fn ecosystem_starts_clean() {
+        let eco = EcosystemManager::new();
+        assert!((eco.water_quality - 1.0).abs() < 0.01);
+        assert!(eco.food.is_empty());
+        assert!(eco.eggs.is_empty());
+        assert!(eco.species.is_empty());
+        assert!(eco.decorations.is_empty());
+        assert_eq!(eco.plant_count, 0);
+    }
+
+    #[test]
+    fn drop_food_adds_particle_and_event() {
+        let mut eco = EcosystemManager::new();
+        eco.drop_food(100.0, 20.0);
+        assert_eq!(eco.food.len(), 1);
+        assert_eq!(eco.events.len(), 1);
+        match &eco.events[0] {
+            SimEvent::FeedingDrop { x, y } => {
+                assert!((x - 100.0).abs() < 0.01);
+                assert!((y - 20.0).abs() < 0.01);
+            }
+            _ => panic!("Expected FeedingDrop event"),
+        }
+    }
+
+    #[test]
+    fn add_remove_decoration() {
+        let mut eco = EcosystemManager::new();
+        let d = eco.add_decoration(DecorationType::TallPlant, 100.0, 500.0, 1.0, false);
+        assert_eq!(eco.decorations.len(), 1);
+        assert_eq!(eco.plant_count, 1);
+
+        eco.add_decoration(DecorationType::Rock, 200.0, 500.0, 1.0, false);
+        assert_eq!(eco.decorations.len(), 2);
+        assert_eq!(eco.plant_count, 1); // rock is not a plant
+
+        assert!(eco.remove_decoration(d.id));
+        assert_eq!(eco.decorations.len(), 1);
+        assert_eq!(eco.plant_count, 0);
+    }
+
+    #[test]
+    fn obstacle_positions_from_decorations() {
+        let mut eco = EcosystemManager::new();
+        eco.add_decoration(DecorationType::Rock, 100.0, 500.0, 2.0, false);
+        let obstacles = eco.obstacle_positions();
+        assert_eq!(obstacles.len(), 1);
+        let (x, y, r) = obstacles[0];
+        assert!((x - 100.0).abs() < 0.01);
+        assert!((y - 500.0).abs() < 0.01);
+        assert!((r - 50.0).abs() < 0.01); // 25.0 * 2.0 scale
+    }
+
+    #[test]
+    fn water_quality_degrades_with_fish() {
+        let mut eco = EcosystemManager::new();
+        let config = SimulationConfig::default();
+        eco.update_water_quality(50, &config);
+        assert!(eco.water_quality < 1.0, "Water should degrade with 50 fish");
+    }
+
+    #[test]
+    fn water_quality_recovers_with_plants() {
+        let mut eco = EcosystemManager::new();
+        eco.add_decoration(DecorationType::TallPlant, 100.0, 500.0, 1.0, false);
+        eco.add_decoration(DecorationType::ShortPlant, 200.0, 500.0, 1.0, false);
+        eco.add_decoration(DecorationType::ShortPlant, 300.0, 500.0, 1.0, false);
+        assert_eq!(eco.plant_count, 3);
+
+        let config = SimulationConfig::default();
+        // With 0 fish and 3 plants, water should recover
+        eco.water_quality = 0.5;
+        eco.update_water_quality(0, &config);
+        assert!(eco.water_quality > 0.5, "Plants should help water recovery");
+    }
+
+    // --- find_root (union-find) ---
+
+    #[test]
+    fn find_root_simple() {
+        let cluster = vec![0, 0, 1, 2, 3];
+        assert_eq!(find_root(&cluster, 0), 0);
+        assert_eq!(find_root(&cluster, 1), 0);
+        assert_eq!(find_root(&cluster, 2), 0);
+        assert_eq!(find_root(&cluster, 4), 0);
+    }
+
+    #[test]
+    fn find_root_self() {
+        let cluster = vec![0, 1, 2];
+        assert_eq!(find_root(&cluster, 0), 0);
+        assert_eq!(find_root(&cluster, 1), 1);
+        assert_eq!(find_root(&cluster, 2), 2);
+    }
+}

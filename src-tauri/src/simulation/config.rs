@@ -161,3 +161,66 @@ impl Default for SimulationConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_sane_values() {
+        let c = SimulationConfig::default();
+
+        // Boids weights are positive
+        assert!(c.separation_weight > 0.0);
+        assert!(c.alignment_weight > 0.0);
+        assert!(c.cohesion_weight > 0.0);
+
+        // Radii are ordered: separation < alignment < cohesion
+        assert!(c.separation_radius < c.alignment_radius);
+        assert!(c.alignment_radius < c.cohesion_radius);
+
+        // Speed/drag
+        assert!(c.base_max_speed > 0.0);
+        assert!(c.drag > 0.0 && c.drag < 1.0);
+
+        // Mutation rates valid probabilities
+        assert!(c.mutation_rate_small > 0.0 && c.mutation_rate_small < 1.0);
+        assert!(c.mutation_rate_large > 0.0 && c.mutation_rate_large < 1.0);
+        assert!(c.mutation_rate_large < c.mutation_rate_small);
+
+        // Tank dimensions
+        assert!(c.tank_width > 0.0);
+        assert!(c.tank_height > 0.0);
+
+        // Carrying capacity
+        assert!(c.base_carrying_capacity > 0);
+
+        // Water quality rates
+        assert!(c.water_degradation_per_fish > 0.0);
+        assert!(c.water_recovery_rate > 0.0);
+
+        // Volume in range
+        assert!(c.master_volume >= 0.0 && c.master_volume <= 1.0);
+    }
+
+    #[test]
+    fn default_config_clone_equals() {
+        let c1 = SimulationConfig::default();
+        let c2 = c1.clone();
+        // Spot-check some fields (no PartialEq derive, but we can compare manually)
+        assert_eq!(c1.base_max_speed, c2.base_max_speed);
+        assert_eq!(c1.tank_width, c2.tank_width);
+        assert_eq!(c1.ollama_model, c2.ollama_model);
+        assert_eq!(c1.theme, c2.theme);
+    }
+
+    #[test]
+    fn config_serialization_roundtrip() {
+        let c = SimulationConfig::default();
+        let json = serde_json::to_string(&c).expect("serialize");
+        let c2: SimulationConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(c.base_max_speed, c2.base_max_speed);
+        assert_eq!(c.base_carrying_capacity, c2.base_carrying_capacity);
+        assert_eq!(c.ollama_url, c2.ollama_url);
+    }
+}

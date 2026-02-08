@@ -335,3 +335,198 @@ fn pattern_distance(a: &PatternGene, b: &PatternGene) -> f32 {
         _ => 1.0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn seeded_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
+    // --- PatternGene ---
+
+    #[test]
+    fn pattern_type_index_unique() {
+        let mut rng = seeded_rng();
+        let patterns = [
+            PatternGene::Solid,
+            PatternGene::Striped { angle: 90.0 },
+            PatternGene::Spotted { density: 0.5 },
+            PatternGene::Gradient { direction: 180.0 },
+            PatternGene::Bicolor { split: 0.5 },
+        ];
+        for (i, p) in patterns.iter().enumerate() {
+            assert_eq!(p.type_index(), i as u8);
+        }
+        // random always returns a valid variant
+        for _ in 0..50 {
+            let p = PatternGene::random(&mut rng);
+            assert!(p.type_index() <= 4);
+        }
+    }
+
+    // --- FishGenome::random ---
+
+    #[test]
+    fn random_genome_traits_in_bounds() {
+        let mut rng = seeded_rng();
+        for _ in 0..100 {
+            let g = FishGenome::random(&mut rng);
+            assert!(g.base_hue >= 0.0 && g.base_hue < 360.0);
+            assert!(g.saturation >= 0.3 && g.saturation <= 1.0);
+            assert!(g.lightness >= 0.3 && g.lightness <= 0.7);
+            assert!(g.body_length >= 0.6 && g.body_length <= 2.0);
+            assert!(g.body_width >= 0.5 && g.body_width <= 1.5);
+            assert!(g.speed >= 0.5 && g.speed <= 2.0);
+            assert!(g.aggression >= 0.2 && g.aggression <= 0.5);
+            assert!(g.metabolism >= 0.5 && g.metabolism <= 2.0);
+            assert!(g.fertility >= 0.3 && g.fertility <= 1.0);
+            assert!(g.generation == 0);
+            assert!(g.parent_a.is_none());
+            assert!(g.parent_b.is_none());
+            assert!(g.sex == Sex::Male || g.sex == Sex::Female);
+        }
+    }
+
+    #[test]
+    fn random_diverse_distributes_hues() {
+        let mut rng = seeded_rng();
+        let total = 10;
+        let genomes: Vec<FishGenome> = (0..total)
+            .map(|i| FishGenome::random_diverse(&mut rng, i, total))
+            .collect();
+        // Hues should be spread across the wheel, not clustered
+        let hues: Vec<f32> = genomes.iter().map(|g| g.base_hue).collect();
+        let min = hues.iter().cloned().fold(f32::MAX, f32::min);
+        let max = hues.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(max - min > 100.0, "Hues should span a wide range, got {}..{}", min, max);
+        // Alternating sex
+        assert_eq!(genomes[0].sex, Sex::Male);
+        assert_eq!(genomes[1].sex, Sex::Female);
+        assert_eq!(genomes[2].sex, Sex::Male);
+    }
+
+    #[test]
+    fn genome_ids_are_unique() {
+        let mut rng = seeded_rng();
+        let g1 = FishGenome::random(&mut rng);
+        let g2 = FishGenome::random(&mut rng);
+        assert_ne!(g1.id, g2.id);
+    }
+
+    // --- Inheritance ---
+
+    #[test]
+    fn inherit_produces_valid_child() {
+        let mut rng = seeded_rng();
+        let parent_a = FishGenome::random(&mut rng);
+        let parent_b = FishGenome::random(&mut rng);
+        let child = FishGenome::inherit(&parent_a, &parent_b, &mut rng, false, 0.02, 0.10);
+
+        assert_eq!(child.generation, parent_a.generation.max(parent_b.generation) + 1);
+        assert_eq!(child.parent_a, Some(parent_a.id));
+        assert_eq!(child.parent_b, Some(parent_b.id));
+        // Traits should be clamped within valid ranges
+        assert!(child.base_hue >= 0.0 && child.base_hue < 360.0);
+        assert!(child.saturation >= 0.3 && child.saturation <= 1.0);
+        assert!(child.body_length >= 0.6 && child.body_length <= 2.0);
+        assert!(child.speed >= 0.5 && child.speed <= 2.0);
+        assert!(child.aggression >= 0.0 && child.aggression <= 1.0);
+    }
+
+    #[test]
+    fn inbreeding_reduces_fitness() {
+        let mut rng = seeded_rng();
+        let parent_a = FishGenome::random(&mut rng);
+        let parent_b = FishGenome::random(&mut rng);
+
+        // Run many trials to check average penalty
+        let mut inbred_lifespan_sum = 0.0_f64;
+        let mut normal_lifespan_sum = 0.0_f64;
+        let trials = 500;
+        for _ in 0..trials {
+            let inbred = FishGenome::inherit(&parent_a, &parent_b, &mut rng, true, 0.02, 0.10);
+            let normal = FishGenome::inherit(&parent_a, &parent_b, &mut rng, false, 0.02, 0.10);
+            inbred_lifespan_sum += inbred.lifespan_factor as f64;
+            normal_lifespan_sum += normal.lifespan_factor as f64;
+        }
+        // Inbred children should have lower lifespan on average (0.85x penalty)
+        assert!(
+            inbred_lifespan_sum < normal_lifespan_sum,
+            "Inbred avg {:.3} should be < normal avg {:.3}",
+            inbred_lifespan_sum / trials as f64,
+            normal_lifespan_sum / trials as f64
+        );
+    }
+
+    // --- Hue distance ---
+
+    #[test]
+    fn hue_distance_wraps_correctly() {
+        assert!((hue_distance(10.0, 350.0) - 20.0).abs() < 0.01);
+        assert!((hue_distance(0.0, 180.0) - 180.0).abs() < 0.01);
+        assert!((hue_distance(90.0, 90.0) - 0.0).abs() < 0.01);
+        assert!((hue_distance(0.0, 0.0) - 0.0).abs() < 0.01);
+        assert!((hue_distance(1.0, 359.0) - 2.0).abs() < 0.01);
+    }
+
+    // --- Genome distance ---
+
+    #[test]
+    fn genome_distance_self_is_zero() {
+        let mut rng = seeded_rng();
+        let g = FishGenome::random(&mut rng);
+        assert!((genome_distance(&g, &g) - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn genome_distance_is_symmetric() {
+        let mut rng = seeded_rng();
+        let a = FishGenome::random(&mut rng);
+        let b = FishGenome::random(&mut rng);
+        let d1 = genome_distance(&a, &b);
+        let d2 = genome_distance(&b, &a);
+        assert!((d1 - d2).abs() < 0.001, "Distance should be symmetric: {} vs {}", d1, d2);
+    }
+
+    #[test]
+    fn genome_distance_is_nonnegative() {
+        let mut rng = seeded_rng();
+        for _ in 0..100 {
+            let a = FishGenome::random(&mut rng);
+            let b = FishGenome::random(&mut rng);
+            assert!(genome_distance(&a, &b) >= 0.0);
+        }
+    }
+
+    // --- Pattern distance ---
+
+    #[test]
+    fn pattern_distance_same_type_zero() {
+        let d = pattern_distance(&PatternGene::Solid, &PatternGene::Solid);
+        assert!((d - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn pattern_distance_different_type_is_one() {
+        let d = pattern_distance(
+            &PatternGene::Solid,
+            &PatternGene::Striped { angle: 90.0 },
+        );
+        assert!((d - 1.0).abs() < 0.001);
+    }
+
+    // --- inherit_hue ---
+
+    #[test]
+    fn inherit_hue_stays_in_range() {
+        let mut rng = seeded_rng();
+        for _ in 0..1000 {
+            let h = inherit_hue(350.0, 10.0, &mut rng, 1.0, 0.02, 0.10);
+            assert!(h >= 0.0 && h < 360.0, "Hue out of range: {}", h);
+        }
+    }
+}

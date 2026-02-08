@@ -385,3 +385,129 @@ impl BoidsEngine {
         (fx, fy)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::config::SimulationConfig;
+    use crate::simulation::fish::Fish;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn seeded_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
+    // --- SpatialGrid ---
+
+    #[test]
+    fn spatial_grid_empty() {
+        let grid = SpatialGrid::new(1200.0, 800.0, 75.0);
+        let neighbors = grid.neighbors(400.0, 400.0, 75.0);
+        assert!(neighbors.is_empty());
+    }
+
+    #[test]
+    fn spatial_grid_finds_nearby_fish() {
+        let mut rng = seeded_rng();
+        let mut grid = SpatialGrid::new(1200.0, 800.0, 75.0);
+
+        // Create fish at known positions
+        let mut fish = Vec::new();
+        let mut f1 = Fish::new(1, 100.0, 100.0, &mut rng);
+        let mut f2 = Fish::new(2, 110.0, 110.0, &mut rng);
+        let mut f3 = Fish::new(3, 900.0, 900.0, &mut rng);
+        // Override positions
+        f1.x = 100.0; f1.y = 100.0;
+        f2.x = 110.0; f2.y = 110.0;
+        f3.x = 900.0; f3.y = 700.0;
+        fish.push(f1);
+        fish.push(f2);
+        fish.push(f3);
+
+        grid.rebuild(&fish);
+
+        let near = grid.neighbors(105.0, 105.0, 75.0);
+        assert!(near.contains(&0), "Should find fish at (100,100)");
+        assert!(near.contains(&1), "Should find fish at (110,110)");
+        // Fish at (900,700) may or may not be found depending on grid radius
+    }
+
+    #[test]
+    fn spatial_grid_boundary_fish() {
+        let mut rng = seeded_rng();
+        let mut grid = SpatialGrid::new(1200.0, 800.0, 75.0);
+        let mut fish = vec![Fish::new(1, 0.0, 0.0, &mut rng)];
+        fish[0].x = 0.0;
+        fish[0].y = 0.0;
+
+        grid.rebuild(&fish);
+        let near = grid.neighbors(0.0, 0.0, 75.0);
+        assert!(near.contains(&0), "Fish at origin should be found");
+    }
+
+    // --- BoidsEngine ---
+
+    #[test]
+    fn boids_engine_creates_with_config() {
+        let config = SimulationConfig::default();
+        let engine = BoidsEngine::new(&config);
+        // Should not panic, grid should be properly sized
+        assert!(engine.grid.cols > 0);
+        assert!(engine.grid.rows > 0);
+    }
+
+    #[test]
+    fn boids_update_moves_fish() {
+        let config = SimulationConfig::default();
+        let mut engine = BoidsEngine::new(&config);
+        let mut rng = seeded_rng();
+        let genome = crate::simulation::genome::FishGenome::random(&mut rng);
+        let mut genomes = std::collections::HashMap::new();
+        let gid = genome.id;
+        genomes.insert(gid, genome);
+
+        let mut fish = vec![Fish::new(gid, 400.0, 400.0, &mut rng)];
+        fish[0].x = 400.0;
+        fish[0].y = 400.0;
+        fish[0].vx = 0.0;
+        fish[0].vy = 0.0;
+
+        let initial_x = fish[0].x;
+        let initial_y = fish[0].y;
+
+        // Run a few ticks
+        for tick in 0..10 {
+            engine.update(&mut fish, &genomes, &config, tick, &[], &[]);
+        }
+
+        // Fish should have moved (wander force + Perlin noise)
+        let moved = (fish[0].x - initial_x).abs() > 0.001 || (fish[0].y - initial_y).abs() > 0.001;
+        assert!(moved, "Fish should move from wander force");
+    }
+
+    #[test]
+    fn boids_fish_stays_in_bounds() {
+        let config = SimulationConfig::default();
+        let mut engine = BoidsEngine::new(&config);
+        let mut rng = seeded_rng();
+        let genome = crate::simulation::genome::FishGenome::random(&mut rng);
+        let mut genomes = std::collections::HashMap::new();
+        let gid = genome.id;
+        genomes.insert(gid, genome);
+
+        // Place fish near boundary with velocity heading out
+        let mut fish = vec![Fish::new(gid, 5.0, 5.0, &mut rng)];
+        fish[0].x = 5.0;
+        fish[0].y = 5.0;
+        fish[0].vx = -10.0;
+        fish[0].vy = -10.0;
+
+        for tick in 0..100 {
+            engine.update(&mut fish, &genomes, &config, tick, &[], &[]);
+        }
+
+        assert!(fish[0].x >= 0.0 && fish[0].x <= config.tank_width);
+        assert!(fish[0].y >= 0.0 && fish[0].y <= config.tank_height);
+    }
+}

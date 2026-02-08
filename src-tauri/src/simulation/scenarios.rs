@@ -149,3 +149,102 @@ fn get_trait(g: &super::genome::FishGenome, name: &str) -> f32 {
         _ => 0.0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::fish::Fish;
+    use crate::simulation::genome::FishGenome;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+    use std::collections::HashMap;
+
+    fn seeded_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
+    #[test]
+    fn all_scenarios_valid() {
+        let scenarios = all_scenarios();
+        assert_eq!(scenarios.len(), 5);
+        for s in &scenarios {
+            assert!(!s.id.is_empty());
+            assert!(!s.name.is_empty());
+            assert!(!s.goals.is_empty());
+            assert!(s.initial_fish_count > 0);
+        }
+    }
+
+    #[test]
+    fn scenario_ids_unique() {
+        let scenarios = all_scenarios();
+        let mut ids: Vec<&str> = scenarios.iter().map(|s| s.id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), scenarios.len());
+    }
+
+    #[test]
+    fn goal_descriptions_nonempty() {
+        let scenarios = all_scenarios();
+        for s in &scenarios {
+            for g in &s.goals {
+                let desc = g.description();
+                assert!(!desc.is_empty(), "Goal description for {} should not be empty", s.id);
+            }
+        }
+    }
+
+    #[test]
+    fn check_goals_population() {
+        let scenario = &all_scenarios()[0]; // survival: ReachPopulation(30)
+        let genomes = HashMap::new();
+        let fish: Vec<Fish> = Vec::new();
+
+        let results = check_goals(scenario, 29, 0, 0, 0, 0.0, &genomes, &fish);
+        assert!(!results[0].1, "29 < 30 should not meet goal");
+
+        let results = check_goals(scenario, 30, 0, 0, 0, 0.0, &genomes, &fish);
+        assert!(results[0].1, "30 >= 30 should meet goal");
+    }
+
+    #[test]
+    fn check_goals_trait_above() {
+        let mut rng = seeded_rng();
+        let mut genome = FishGenome::random(&mut rng);
+        genome.aggression = 0.96;
+        genome.speed = 1.9;
+        let fish = vec![Fish::new(genome.id, 100.0, 100.0, &mut rng)];
+        let mut genomes = HashMap::new();
+        genomes.insert(genome.id, genome);
+
+        let scenario = &all_scenarios()[1]; // apex_predator
+        let results = check_goals(scenario, 1, 0, 0, 0, 0.0, &genomes, &fish);
+        assert!(results[0].1, "Aggression 0.96 > 0.95");
+        assert!(results[1].1, "Speed 1.9 > 1.8");
+    }
+
+    #[test]
+    fn check_goals_trait_below() {
+        let mut rng = seeded_rng();
+        let mut genome = FishGenome::random(&mut rng);
+        genome.aggression = 0.1;
+        let fish = vec![Fish::new(genome.id, 100.0, 100.0, &mut rng)];
+        let mut genomes = HashMap::new();
+        genomes.insert(genome.id, genome);
+
+        let scenario = &all_scenarios()[3]; // peaceful_kingdom: aggression < 0.2
+        let results = check_goals(scenario, 1, 0, 0, 0, 0.0, &genomes, &fish);
+        assert!(results[0].1, "Aggression 0.1 < 0.2");
+    }
+
+    #[test]
+    fn check_goals_empty_fish_fails_trait_below() {
+        let genomes = HashMap::new();
+        let fish: Vec<Fish> = Vec::new();
+
+        let scenario = &all_scenarios()[3]; // peaceful_kingdom
+        let results = check_goals(scenario, 0, 0, 0, 0, 0.0, &genomes, &fish);
+        assert!(!results[0].1, "Empty fish list should not meet TraitBelow");
+    }
+}

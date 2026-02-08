@@ -367,3 +367,212 @@ impl Fish {
                 .unwrap_or(true)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::genome::FishGenome;
+    use crate::simulation::config::SimulationConfig;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn seeded_rng() -> StdRng {
+        StdRng::seed_from_u64(42)
+    }
+
+    fn test_genome() -> FishGenome {
+        let mut rng = seeded_rng();
+        FishGenome::random(&mut rng)
+    }
+
+    #[test]
+    fn fish_new_defaults() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let f = Fish::new(genome.id, 100.0, 200.0, &mut rng);
+
+        assert!(f.is_alive);
+        assert_eq!(f.age, 0);
+        assert!((f.hunger - 0.3).abs() < 0.01);
+        assert!((f.health - 1.0).abs() < 0.01);
+        assert!((f.energy - 1.0).abs() < 0.01);
+        assert_eq!(f.behavior, BehaviorState::Swimming);
+        assert_eq!(f.meals_eaten, 0);
+        assert!(!f.is_juvenile);
+        assert!(!f.is_infected);
+        assert!(!f.is_favorite);
+        assert!(f.custom_name.is_none());
+        assert!(f.x == 100.0 && f.y == 200.0);
+    }
+
+    #[test]
+    fn fish_ids_are_unique() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let f1 = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        let f2 = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        assert_ne!(f1.id, f2.id);
+    }
+
+    #[test]
+    fn eat_reduces_hunger_and_changes_state() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        f.hunger = 0.8;
+        f.behavior = BehaviorState::Foraging;
+
+        f.eat();
+
+        assert!((f.hunger - 0.5).abs() < 0.01);
+        assert_eq!(f.meals_eaten, 1);
+        assert_eq!(f.behavior, BehaviorState::Satiated);
+        assert!((f.energy - 1.0).abs() < 0.1); // energy capped at 1.0
+    }
+
+    #[test]
+    fn eat_hunger_floors_at_zero() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        f.hunger = 0.1;
+        f.eat();
+        assert!(f.hunger >= 0.0);
+    }
+
+    #[test]
+    fn age_fraction_calculation() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+
+        f.age = 0;
+        assert!((f.age_fraction(&genome, 20_000) - 0.0).abs() < 0.01);
+
+        f.age = 10_000;
+        let expected = 10_000.0 / (20_000.0 * genome.lifespan_factor);
+        assert!((f.age_fraction(&genome, 20_000) - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn behavior_speed_multipliers() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+
+        f.behavior = BehaviorState::Swimming;
+        assert!((f.behavior_speed_multiplier() - 1.0).abs() < 0.01);
+
+        f.behavior = BehaviorState::Fleeing;
+        assert!((f.behavior_speed_multiplier() - 1.4).abs() < 0.01);
+
+        f.behavior = BehaviorState::Hunting;
+        assert!((f.behavior_speed_multiplier() - 1.2).abs() < 0.01);
+
+        f.behavior = BehaviorState::Resting;
+        assert!((f.behavior_speed_multiplier() - 0.3).abs() < 0.01);
+    }
+
+    #[test]
+    fn behavior_schooling_multipliers() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+
+        f.behavior = BehaviorState::Swimming;
+        assert!((f.behavior_schooling_multiplier() - 1.0).abs() < 0.01);
+
+        f.behavior = BehaviorState::Fleeing;
+        assert!((f.behavior_schooling_multiplier() - 0.0).abs() < 0.01);
+
+        f.behavior = BehaviorState::Hunting;
+        assert!((f.behavior_schooling_multiplier() - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn can_reproduce_basic_conditions() {
+        let mut rng = seeded_rng();
+        let mut genome = test_genome();
+        genome.maturity_age = 0.3;
+        genome.lifespan_factor = 1.0;
+        let config = SimulationConfig::default();
+
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        f.age = 8000; // age_frac = 8000/20000 = 0.4, above maturity_age 0.3
+        f.hunger = 0.2;
+        f.is_alive = true;
+        f.is_juvenile = false;
+
+        assert!(f.can_reproduce(&genome, 1000, &config, 20_000, 0.8));
+    }
+
+    #[test]
+    fn cannot_reproduce_if_hungry() {
+        let mut rng = seeded_rng();
+        let mut genome = test_genome();
+        genome.maturity_age = 0.3;
+        genome.lifespan_factor = 1.0;
+        let config = SimulationConfig::default();
+
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        f.age = 8000;
+        f.hunger = 0.5; // above 0.4 threshold
+        assert!(!f.can_reproduce(&genome, 1000, &config, 20_000, 0.8));
+    }
+
+    #[test]
+    fn cannot_reproduce_if_juvenile() {
+        let mut rng = seeded_rng();
+        let mut genome = test_genome();
+        genome.maturity_age = 0.3;
+        genome.lifespan_factor = 1.0;
+        let config = SimulationConfig::default();
+
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        f.age = 8000;
+        f.hunger = 0.2;
+        f.is_juvenile = true;
+        assert!(!f.can_reproduce(&genome, 1000, &config, 20_000, 0.8));
+    }
+
+    #[test]
+    fn cannot_reproduce_poor_water() {
+        let mut rng = seeded_rng();
+        let mut genome = test_genome();
+        genome.maturity_age = 0.3;
+        genome.lifespan_factor = 1.0;
+        let config = SimulationConfig::default();
+
+        let mut f = Fish::new(genome.id, 0.0, 0.0, &mut rng);
+        f.age = 8000;
+        f.hunger = 0.2;
+        assert!(!f.can_reproduce(&genome, 1000, &config, 20_000, 0.3)); // water < 0.4
+    }
+
+    #[test]
+    fn behavior_state_as_str() {
+        assert_eq!(BehaviorState::Swimming.as_str(), "swimming");
+        assert_eq!(BehaviorState::Foraging.as_str(), "foraging");
+        assert_eq!(BehaviorState::Fleeing.as_str(), "fleeing");
+        assert_eq!(BehaviorState::Satiated.as_str(), "satiated");
+        assert_eq!(BehaviorState::Courting.as_str(), "courting");
+        assert_eq!(BehaviorState::Resting.as_str(), "resting");
+        assert_eq!(BehaviorState::Hunting.as_str(), "hunting");
+        assert_eq!(BehaviorState::Dying.as_str(), "dying");
+    }
+
+    #[test]
+    fn dying_fish_eventually_dies() {
+        let mut rng = seeded_rng();
+        let genome = test_genome();
+        let config = SimulationConfig::default();
+        let mut f = Fish::new(genome.id, 400.0, 400.0, &mut rng);
+        f.health = 0.0; // trigger dying
+
+        for tick in 0..200 {
+            f.update_behavior(&genome, &config, tick, false, None, 20_000, 1.0, 12.0);
+            if !f.is_alive { break; }
+        }
+        assert!(!f.is_alive, "Fish should die within 200 ticks of health=0");
+    }
+}
