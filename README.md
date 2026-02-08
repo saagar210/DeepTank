@@ -2,7 +2,7 @@
 
 A living desktop aquarium where fish evolve, hunt, school, and speciate — powered by real genetics, boids physics, and way too much Rust.
 
-![Tauri 2](https://img.shields.io/badge/Tauri-2-blue) ![React 19](https://img.shields.io/badge/React-19-61dafb) ![Rust](https://img.shields.io/badge/Rust-edition%202021-orange) ![Canvas 2D](https://img.shields.io/badge/Rendering-Canvas%202D-green)
+![Tauri 2](https://img.shields.io/badge/Tauri-2-blue) ![React 19](https://img.shields.io/badge/React-19-61dafb) ![Rust](https://img.shields.io/badge/Rust-edition%202021-orange) ![Canvas 2D](https://img.shields.io/badge/Rendering-Canvas%202D-green) ![Tests](https://img.shields.io/badge/Tests-107%20passing-brightgreen)
 
 ## What is this?
 
@@ -85,12 +85,15 @@ npm run tauri build
 ### Test
 
 ```bash
-# Rust unit tests
+# Rust unit tests (80 tests across 7 modules)
 cd src-tauri && cargo test
 
-# Frontend tests
-npx vitest run
+# Frontend tests (27 tests across 3 suites)
+npm test
 ```
+
+**Rust** — genome inheritance, fish behavior, boids physics, ecosystem dynamics, events, achievements, scenarios
+**Frontend** — type contracts, sprite cache management, audio engine safety
 
 ## Keyboard Shortcuts
 
