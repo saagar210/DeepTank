@@ -203,7 +203,7 @@ export class AudioEngine {
     if (!this.ctx || !this.eventGain || !this._eventEnabled) return;
     const t = this.ctx.currentTime;
     // Short noise burst filtered for splash effect
-    const bufferSize = this.ctx.sampleRate * 0.1;
+    const bufferSize = Math.round(this.ctx.sampleRate * 0.1);
     const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
     const d = buffer.getChannelData(0);
     for (let i = 0; i < bufferSize; i++) {
@@ -223,6 +223,32 @@ export class AudioEngine {
     gain.connect(this.eventGain);
     src.start(t);
     src.onended = () => { src.disconnect(); bp.disconnect(); gain.disconnect(); };
+  }
+
+  playTap() {
+    if (!this.ctx || !this.eventGain || !this._eventEnabled) return;
+    const t = this.ctx.currentTime;
+    // Short percussive knock sound — noise burst through low-pass filter
+    const bufferSize = Math.round(this.ctx.sampleRate * 0.08);
+    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+    const d = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 3);
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const lp = this.ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 800;
+    lp.Q.value = 1.2;
+    const gain = this.ctx.createGain();
+    gain.gain.setValueAtTime(0.18, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+    src.connect(lp);
+    lp.connect(gain);
+    gain.connect(this.eventGain);
+    src.start(t);
+    src.onended = () => { src.disconnect(); lp.disconnect(); gain.disconnect(); };
   }
 
   set muted(v: boolean) {
@@ -257,5 +283,8 @@ export class AudioEngine {
     this.stopAmbient();
     this.ctx?.close();
     this.ctx = null;
+    this.masterGain = null;
+    this.ambientGain = null;
+    this.eventGain = null;
   }
 }

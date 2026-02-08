@@ -109,6 +109,53 @@ pub async fn generate_journal_entry(
     Some(body.response.trim().to_string())
 }
 
+pub async fn generate_narration(
+    url: &str,
+    model: &str,
+    population: u32,
+    species_count: u32,
+    water_quality: f32,
+    latest_event: &str,
+) -> Option<String> {
+    let prompt = format!(
+        "Current state: {} fish, {} species, water quality {:.0}%.\nRecent event: {}\n\nWrite ONE dramatic sentence (max 25 words) in David Attenborough style.",
+        population, species_count, water_quality * 100.0, latest_event
+    );
+
+    let req = OllamaRequest {
+        model: model.to_string(),
+        prompt,
+        system: "You are narrating a nature documentary about a digital aquarium where fish evolve through genetic algorithms. Be dramatic, concise, and insightful. ONE sentence only.".to_string(),
+        stream: false,
+    };
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/generate", url))
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .ok()?;
+
+    let body: OllamaResponse = resp.json().await.ok()?;
+    let text = body.response.trim().to_string();
+    // Take just the first sentence if multiple were generated
+    // Find the first sentence-ending punctuation and include it
+    let end_pos = text.find(|c: char| c == '.' || c == '!' || c == '?');
+    match end_pos {
+        Some(pos) => {
+            let sentence = text[..=pos].trim().to_string();
+            if sentence.is_empty() { None } else { Some(sentence) }
+        }
+        None => {
+            // No sentence-ending punctuation found; use the whole text with a period
+            let trimmed = text.trim().to_string();
+            if trimmed.is_empty() { None } else { Some(format!("{}.", trimmed)) }
+        }
+    }
+}
+
 fn hue_to_color_name(hue: f32) -> &'static str {
     match hue as u32 {
         0..=15 | 346..=360 => "red",

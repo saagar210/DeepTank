@@ -48,7 +48,7 @@ export function ReplayControls({ onClose, onPauseSimulation }: Props) {
     onPauseSimulation();
     invoke<Snapshot[]>("get_all_snapshots").then((data) => {
       if (data.length > 0) setSnapshots(data);
-    });
+    }).catch(() => {});
   }, [onPauseSimulation]);
 
   useEffect(() => { playRef.current = playing; }, [playing]);

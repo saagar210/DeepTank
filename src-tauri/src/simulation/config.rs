@@ -37,6 +37,7 @@ pub struct SimulationConfig {
     pub current_direction: f32,
     pub current_strength: f32,
     pub day_night_cycle: bool,
+    pub day_night_speed: f32, // 0 = real-time clock, >0 = accelerated sim cycle
     pub bubble_rate: f32,
     pub particle_density: f32,
     pub tank_width: f32,
@@ -63,6 +64,18 @@ pub struct SimulationConfig {
 
     // Visual
     pub theme: String,
+
+    // Eggs & Juveniles
+    pub egg_hatch_time: u32,
+    pub juvenile_duration: u32,
+
+    // Environmental Events
+    pub environmental_events_enabled: bool,
+    pub event_frequency: f32,
+
+    // Territory
+    pub territory_enabled: bool,
+    pub territory_claim_radius: f32,
 
     // Disease
     pub disease_enabled: bool,
@@ -107,6 +120,7 @@ impl Default for SimulationConfig {
             current_direction: 0.0,
             current_strength: 0.0,
             day_night_cycle: true,
+            day_night_speed: 1.0,
             bubble_rate: 1.0,
             particle_density: 1.0,
             tank_width: 1200.0,
@@ -128,6 +142,15 @@ impl Default for SimulationConfig {
             event_sounds_enabled: true,
 
             theme: "aquarium".to_string(),
+
+            egg_hatch_time: 180,      // 6 seconds at 30Hz
+            juvenile_duration: 300,   // 10 seconds at 30Hz
+
+            environmental_events_enabled: true,
+            event_frequency: 1.0,
+
+            territory_enabled: true,
+            territory_claim_radius: 60.0,
 
             disease_enabled: false,
             disease_infection_chance: 0.3,

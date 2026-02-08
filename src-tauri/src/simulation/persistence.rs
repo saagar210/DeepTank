@@ -1,4 +1,4 @@
-use crate::simulation::ecosystem::Species;
+use crate::simulation::ecosystem::{Egg, Species};
 use crate::simulation::fish::{BehaviorState, Fish};
 use crate::simulation::genome::{FishGenome, PatternGene, Sex};
 use rusqlite::{params, Connection, Result};
@@ -163,7 +163,43 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     if !has_disease_col {
         conn.execute_batch("ALTER TABLE genomes ADD COLUMN disease_resistance REAL NOT NULL DEFAULT 0.5;").ok();
     }
+    // Migration: add extended trait columns to population_snapshots
+    let has_boldness_col: bool = conn.prepare("SELECT avg_boldness FROM population_snapshots LIMIT 0").is_ok();
+    if !has_boldness_col {
+        conn.execute_batch("
+            ALTER TABLE population_snapshots ADD COLUMN avg_boldness REAL DEFAULT 0.5;
+            ALTER TABLE population_snapshots ADD COLUMN avg_school_affinity REAL DEFAULT 0.5;
+            ALTER TABLE population_snapshots ADD COLUMN avg_disease_resistance REAL DEFAULT 0.5;
+            ALTER TABLE population_snapshots ADD COLUMN min_speed REAL DEFAULT 0.5;
+            ALTER TABLE population_snapshots ADD COLUMN max_speed REAL DEFAULT 2.0;
+            ALTER TABLE population_snapshots ADD COLUMN min_size REAL DEFAULT 0.6;
+            ALTER TABLE population_snapshots ADD COLUMN max_size REAL DEFAULT 2.0;
+        ").ok();
+    }
+    // Migration: add genetic_diversity column
+    let has_diversity_col: bool = conn.prepare("SELECT genetic_diversity FROM population_snapshots LIMIT 0").is_ok();
+    if !has_diversity_col {
+        conn.execute_batch("ALTER TABLE population_snapshots ADD COLUMN genetic_diversity REAL DEFAULT 0.5;").ok();
+    }
+    // Migration: add custom_name and is_favorite columns to fish
+    let has_name_col: bool = conn.prepare("SELECT custom_name FROM fish LIMIT 0").is_ok();
+    if !has_name_col {
+        conn.execute_batch("
+            ALTER TABLE fish ADD COLUMN custom_name TEXT DEFAULT NULL;
+            ALTER TABLE fish ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0;
+        ").ok();
+    }
+
     conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS eggs (
+            id INTEGER PRIMARY KEY,
+            genome_id INTEGER NOT NULL,
+            position_x REAL NOT NULL,
+            position_y REAL NOT NULL,
+            age INTEGER NOT NULL DEFAULT 0,
+            parent_a INTEGER NOT NULL,
+            parent_b INTEGER NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS idx_genomes_generation ON genomes(generation);
         CREATE INDEX IF NOT EXISTS idx_snapshots_tick ON population_snapshots(tick);
         CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
@@ -180,6 +216,7 @@ pub fn save_state(
     fish: &[Fish],
     genomes: &HashMap<u32, FishGenome>,
     species: &[Species],
+    eggs: &[Egg],
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
 
@@ -218,13 +255,25 @@ pub fn save_state(
         tx.execute(
             "INSERT INTO fish (id, genome_id, position_x, position_y, position_z,
                 velocity_x, velocity_y, heading, age, hunger, health, energy,
-                behavior_state, meals_eaten, last_reproduced_tick, is_alive)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                behavior_state, meals_eaten, last_reproduced_tick, is_alive,
+                custom_name, is_favorite)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![
                 f.id, f.genome_id, f.x, f.y, f.z, f.vx, f.vy, f.heading,
                 f.age, f.hunger, f.health, f.energy, f.behavior.as_str(),
                 f.meals_eaten, f.last_reproduced_tick.map(|t| t as i64), f.is_alive as i32,
+                f.custom_name, f.is_favorite as i32,
             ],
+        )?;
+    }
+
+    // Replace eggs table
+    tx.execute("DELETE FROM eggs", [])?;
+    for e in eggs {
+        tx.execute(
+            "INSERT INTO eggs (id, genome_id, position_x, position_y, age, parent_a, parent_b)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![e.id, e.genome_id, e.x, e.y, e.age, e.parent_a_genome, e.parent_b_genome],
         )?;
     }
 
@@ -247,10 +296,10 @@ pub fn save_state(
     Ok(())
 }
 
-/// Returns (tick, water_quality, fish, genomes, species, max_species_id)
+/// Returns (tick, water_quality, fish, genomes, species, eggs, max_species_id)
 pub fn load_state(
     conn: &Connection,
-) -> Result<Option<(u64, f32, Vec<Fish>, HashMap<u32, FishGenome>, Vec<Species>, u32)>> {
+) -> Result<Option<(u64, f32, Vec<Fish>, HashMap<u32, FishGenome>, Vec<Species>, Vec<Egg>, u32)>> {
     // Check if there's saved state
     let tick: i64 = conn.query_row("SELECT tick_count FROM aquarium WHERE id = 1", [], |row| row.get(0))?;
     if tick == 0 {
@@ -312,7 +361,7 @@ pub fn load_state(
     let mut stmt = conn.prepare(
         "SELECT id, genome_id, position_x, position_y, position_z, velocity_x, velocity_y,
                 heading, age, hunger, health, energy, behavior_state, meals_eaten,
-                last_reproduced_tick, is_alive FROM fish WHERE is_alive = 1"
+                last_reproduced_tick, is_alive, custom_name, is_favorite FROM fish WHERE is_alive = 1"
     )?;
     let fish_rows = stmt.query_map([], |row| {
         let beh_str: String = row.get(12)?;
@@ -336,6 +385,7 @@ pub fn load_state(
                 "satiated" => BehaviorState::Satiated,
                 "courting" => BehaviorState::Courting,
                 "resting" => BehaviorState::Resting,
+                "hunting" => BehaviorState::Hunting,
                 "dying" => BehaviorState::Dying,
                 _ => BehaviorState::Swimming,
             },
@@ -351,6 +401,16 @@ pub fn load_state(
             starvation_ticks: 0,
             fleeing_from: None,
             killed_by_predator: false,
+            is_juvenile: false,
+            juvenile_timer: 0,
+            stress: 0.0,
+            tap_flee_timer: 0,
+            hunting_target: None,
+            hunting_timer: 0,
+            territory_center: None,
+            territory_radius: 0.0,
+            custom_name: row.get::<_, Option<String>>(16).unwrap_or(None),
+            is_favorite: row.get::<_, i32>(17).unwrap_or(0) != 0,
             is_infected: false,
             infection_timer: 0,
             recovery_timer: 0,
@@ -415,7 +475,29 @@ pub fn load_state(
         sp.member_count = sp.member_genome_ids.len() as u32;
     }
 
-    Ok(Some((tick as u64, water_quality as f32, fish, genomes, species, max_species_id)))
+    // Load eggs
+    let mut eggs = Vec::new();
+    let egg_result = conn.prepare(
+        "SELECT id, genome_id, position_x, position_y, age, parent_a, parent_b FROM eggs"
+    );
+    if let Ok(mut stmt) = egg_result {
+        let egg_rows = stmt.query_map([], |row| {
+            Ok(Egg {
+                id: row.get(0)?,
+                genome_id: row.get(1)?,
+                x: row.get(2)?,
+                y: row.get(3)?,
+                age: row.get(4)?,
+                parent_a_genome: row.get(5)?,
+                parent_b_genome: row.get(6)?,
+            })
+        })?;
+        for e in egg_rows {
+            eggs.push(e?);
+        }
+    }
+
+    Ok(Some((tick as u64, water_quality as f32, fish, genomes, species, eggs, max_species_id)))
 }
 
 pub fn save_snapshot(
@@ -428,10 +510,16 @@ pub fn save_snapshot(
     fish: &[Fish],
     births: u32,
     deaths: u32,
+    genetic_diversity: f32,
 ) -> Result<()> {
-    let (avg_hue, avg_speed, avg_size, avg_aggression, avg_metabolism) = if !fish.is_empty() {
+    let (avg_hue, avg_speed, avg_size, avg_aggression, avg_metabolism,
+         avg_boldness, avg_school_affinity, avg_disease_resistance,
+         min_speed, max_speed, min_size, max_size) = if !fish.is_empty() {
         let mut sin_sum = 0.0_f32; let mut cos_sum = 0.0_f32;
         let mut sp = 0.0_f32; let mut sz = 0.0_f32; let mut ag = 0.0_f32; let mut met = 0.0_f32;
+        let mut bold = 0.0_f32; let mut school = 0.0_f32; let mut disease_r = 0.0_f32;
+        let mut sp_min = f32::MAX; let mut sp_max = f32::MIN;
+        let mut sz_min = f32::MAX; let mut sz_max = f32::MIN;
         let mut count = 0_u32;
         for f in fish {
             if let Some(g) = genomes.get(&f.genome_id) {
@@ -439,25 +527,36 @@ pub fn save_snapshot(
                 sin_sum += rad.sin();
                 cos_sum += rad.cos();
                 sp += g.speed; sz += g.body_length; ag += g.aggression; met += g.metabolism;
+                bold += g.boldness; school += g.school_affinity; disease_r += g.disease_resistance;
+                if g.speed < sp_min { sp_min = g.speed; }
+                if g.speed > sp_max { sp_max = g.speed; }
+                if g.body_length < sz_min { sz_min = g.body_length; }
+                if g.body_length > sz_max { sz_max = g.body_length; }
                 count += 1;
             }
         }
         let n = count.max(1) as f32;
         let avg_h = sin_sum.atan2(cos_sum).to_degrees().rem_euclid(360.0);
-        (avg_h, sp/n, sz/n, ag/n, met/n)
+        if count == 0 { sp_min = 0.0; sp_max = 0.0; sz_min = 0.0; sz_max = 0.0; }
+        (avg_h, sp/n, sz/n, ag/n, met/n, bold/n, school/n, disease_r/n,
+         sp_min, sp_max, sz_min, sz_max)
     } else {
-        (0.0, 0.0, 0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     };
 
     conn.execute(
         "INSERT INTO population_snapshots (tick, population, species_count, water_quality,
             avg_hue, avg_speed, avg_size, avg_aggression, avg_metabolism,
-            births_since_last, deaths_since_last)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            births_since_last, deaths_since_last,
+            avg_boldness, avg_school_affinity, avg_disease_resistance,
+            min_speed, max_speed, min_size, max_size, genetic_diversity)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
         params![
             tick as i64, population, species_count, water_quality,
             avg_hue, avg_speed, avg_size, avg_aggression, avg_metabolism,
             births, deaths,
+            avg_boldness, avg_school_affinity, avg_disease_resistance,
+            min_speed, max_speed, min_size, max_size, genetic_diversity,
         ],
     )?;
     Ok(())

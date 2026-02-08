@@ -39,7 +39,7 @@ export function SpeciesGallery({ open, onClose }: Props) {
 
   const fetchData = useCallback(async () => {
     const data = await invoke<SpeciesHistoryEntry[]>("get_species_history").catch(() => []);
-    setSpecies(data as SpeciesHistoryEntry[]);
+    setSpecies(data);
   }, []);
 
   useEffect(() => {

@@ -39,10 +39,12 @@ interface Props {
   speed: number;
   feedMode: boolean;
   muted: boolean;
+  breedingMode?: boolean;
   onPauseToggle: () => void;
   onSpeedChange: (mult: number) => void;
   onFeedToggle: () => void;
   onMuteToggle: () => void;
+  onBreedToggle?: () => void;
   onStepForward?: () => void;
   onScreenshot?: () => void;
   foodType?: string;
@@ -54,10 +56,12 @@ export const Toolbar = memo(function Toolbar({
   speed,
   feedMode,
   muted,
+  breedingMode,
   onPauseToggle,
   onSpeedChange,
   onFeedToggle,
   onMuteToggle,
+  onBreedToggle,
   onStepForward,
   onScreenshot,
   foodType,
@@ -113,6 +117,11 @@ export const Toolbar = memo(function Toolbar({
       {onScreenshot && (
         <button style={btnStyle} onClick={onScreenshot}>
           Screenshot [P]
+        </button>
+      )}
+      {onBreedToggle && (
+        <button style={breedingMode ? activeBtnStyle : btnStyle} onClick={onBreedToggle}>
+          Breed {breedingMode ? "(active)" : "[B]"}
         </button>
       )}
     </div>

@@ -1,10 +1,11 @@
-import { memo } from "react";
+import { memo, useState, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { BASE_LIFESPAN } from "../types";
 import type { FishDetail } from "../types";
 
 const panelStyle: React.CSSProperties = {
   position: "absolute",
-  top: 40,
+  top: 68,
   right: 0,
   bottom: 40,
   width: 260,
@@ -83,16 +84,72 @@ function lifeStageName(ageFrac: number, maturityAge: number): string {
   return "Elder";
 }
 
-export const Inspector = memo(function Inspector({ fish, onClose, onViewLineage }: { fish: FishDetail; onClose: () => void; onViewLineage?: (genomeId: number) => void }) {
+export const Inspector = memo(function Inspector({ fish, onClose, onViewLineage, onFishUpdated }: {
+  fish: FishDetail;
+  onClose: () => void;
+  onViewLineage?: (genomeId: number) => void;
+  onFishUpdated?: () => void;
+}) {
   const g = fish.genome;
   const hueColor = `hsl(${g.base_hue}, ${Math.round(g.saturation * 100)}%, ${Math.round(g.lightness * 100)}%)`;
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState(fish.custom_name ?? "");
+
+  // Reset editing state when fish changes
+  useEffect(() => {
+    setEditingName(false);
+    setNameInput(fish.custom_name ?? "");
+  }, [fish.id, fish.custom_name]);
+
+  const handleNameSave = useCallback(async () => {
+    await invoke("name_fish", { fishId: fish.id, name: nameInput });
+    setEditingName(false);
+    onFishUpdated?.();
+  }, [fish.id, nameInput, onFishUpdated]);
+
+  const handleFavoriteToggle = useCallback(async () => {
+    await invoke("toggle_favorite", { fishId: fish.id });
+    onFishUpdated?.();
+  }, [fish.id, onFishUpdated]);
 
   return (
     <div style={panelStyle}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontWeight: 600, fontSize: 14 }}>
-          {fish.species_name ?? `Fish #${fish.id}`}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
+          <button
+            onClick={handleFavoriteToggle}
+            title={fish.is_favorite ? "Remove from favorites" : "Add to favorites"}
+            style={{
+              background: "none", border: "none", cursor: "pointer", fontSize: 16, padding: 0,
+              color: fish.is_favorite ? "#fc0" : "rgba(255,255,255,0.25)",
+            }}
+          >
+            {fish.is_favorite ? "\u2605" : "\u2606"}
+          </button>
+          {editingName ? (
+            <input
+              autoFocus
+              value={nameInput}
+              onChange={(e) => setNameInput(e.target.value)}
+              onBlur={handleNameSave}
+              onKeyDown={(e) => { if (e.key === "Enter") handleNameSave(); if (e.key === "Escape") setEditingName(false); }}
+              maxLength={20}
+              style={{
+                background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
+                borderRadius: 3, color: "#dde", fontSize: 13, fontWeight: 600, fontFamily: "system-ui",
+                padding: "1px 4px", width: "100%", outline: "none",
+              }}
+            />
+          ) : (
+            <span
+              onClick={() => { setNameInput(fish.custom_name ?? ""); setEditingName(true); }}
+              style={{ fontWeight: 600, fontSize: 14, cursor: "text" }}
+              title="Click to rename"
+            >
+              {fish.custom_name || fish.species_name || `Fish #${fish.id}`}
+            </span>
+          )}
+        </div>
         <button
           onClick={onClose}
           style={{
@@ -161,6 +218,7 @@ export const Inspector = memo(function Inspector({ fish, onClose, onViewLineage 
           <TraitBar label="Fertility" value={g.fertility} min={0.3} max={1} />
           <TraitBar label="Lifespan" value={g.lifespan_factor} min={0.5} max={2} />
           <TraitBar label="Body size" value={g.body_length} min={0.6} max={2} />
+          <TraitBar label="Disease res." value={g.disease_resistance} min={0} max={1} />
         </div>
         <div style={{ fontSize: 10, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>
           Pattern: {patternName(g.pattern)} | Hue: {Math.round(g.base_hue)}

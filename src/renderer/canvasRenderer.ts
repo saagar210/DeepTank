@@ -1,4 +1,4 @@
-import type { FishState, FoodState, BubbleState, DecorationState, FrameUpdate, FishGenome } from "../types";
+import type { FishState, FoodState, BubbleState, EggState, DecorationState, FrameUpdate, FishGenome } from "../types";
 import { getCachedSprite, renderFishSprite, hasCachedSprite, evictStaleSprites } from "./fishSprite";
 
 interface PrevFrame {
@@ -73,6 +73,9 @@ export class CanvasRenderer {
 
   // Theme
   private theme: ThemeColors = THEMES.aquarium;
+
+  // Tap ripples
+  private tapRipples: { x: number; y: number; startTime: number }[] = [];
 
   // Viewport (zoom & pan)
   private vpX = 0;
@@ -178,6 +181,14 @@ export class CanvasRenderer {
     this.theme = THEMES[name] ?? THEMES.aquarium;
   }
 
+  setWidgetMode(enabled: boolean) {
+    this._widgetMode = enabled;
+  }
+
+  addTapRipple(x: number, y: number) {
+    this.tapRipples.push({ x, y, startTime: performance.now() });
+  }
+
   zoomAt(screenX: number, screenY: number, delta: number) {
     const oldZoom = this.vpZoom;
     const factor = delta > 0 ? 0.9 : 1.1;
@@ -220,12 +231,27 @@ export class CanvasRenderer {
   }
 
   private currentHour = 12;
+  private dayBrightness = 1.0;
+  private _widgetMode = false;
 
   private render() {
     this.time = performance.now();
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    const now = new Date();
-    this.currentHour = now.getHours() + now.getMinutes() / 60;
+
+    // Use sim time_of_day if available, else fall back to real clock
+    if (this.currentFrame && this.currentFrame.time_of_day !== undefined) {
+      this.currentHour = this.currentFrame.time_of_day;
+    } else {
+      const now = new Date();
+      this.currentHour = now.getHours() + now.getMinutes() / 60;
+    }
+
+    // Compute dayBrightness for use across all draw methods
+    const hour = this.currentHour;
+    if (hour < 5 || hour >= 21) this.dayBrightness = 0.4;
+    else if (hour < 7) this.dayBrightness = 0.4 + (hour - 5) / 2 * 0.6;
+    else if (hour > 18) this.dayBrightness = 1.0 - (hour - 18) / 3 * 0.6;
+    else this.dayBrightness = 1.0;
 
     // Apply viewport transform (zoom & pan)
     this.ctx.save();
@@ -242,14 +268,27 @@ export class CanvasRenderer {
 
     const alpha = this.getInterpolationAlpha();
 
-    // Light rays
-    this.drawLightRays();
+    if (!this._widgetMode) {
+      // Night sky effects (moon & stars) — drawn before light rays
+      if (this.dayBrightness < 0.6) {
+        this.drawMoonGlow();
+        this.drawStars();
+      }
 
-    // Caustics
-    this.drawCaustics();
+      // Light rays
+      this.drawLightRays();
+
+      // Caustics
+      this.drawCaustics();
+    }
 
     // Decorations (drawn before food/fish — they sit on sand)
     this.drawDecorations(this.currentFrame.decorations);
+
+    // Eggs (sit near decorations/sand)
+    if (this.currentFrame.eggs) {
+      this.drawEggs(this.currentFrame.eggs);
+    }
 
     // Sort fish by z for proper depth rendering
     const sortedFish = [...this.currentFrame.fish].sort((a, b) => a.z - b.z);
@@ -262,6 +301,33 @@ export class CanvasRenderer {
       this.drawFish(fish, alpha);
     }
 
+    // Skip overlays in widget mode
+    if (this._widgetMode) {
+      // Bubbles only (reduced)
+      this.drawBubbles(this.currentFrame.bubbles);
+      this.drawSurface();
+      this.ctx.restore();
+      this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      return;
+    }
+
+    // Territory circle for selected fish
+    if (this.selectedFishId !== null) {
+      const sel = sortedFish.find((f) => f.id === this.selectedFishId);
+      if (sel && sel.territory_cx != null && sel.territory_cy != null && sel.territory_r != null) {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(sel.territory_cx, sel.territory_cy, sel.territory_r, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(255,180,100,0.15)";
+        ctx.setLineDash([6, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
+    }
+
     // Hover & selection highlight rings
     for (const fish of sortedFish) {
       if (fish.id === this.selectedFishId) {
@@ -270,6 +336,29 @@ export class CanvasRenderer {
         this.drawHighlightRing(fish, alpha, "hover");
       }
     }
+
+    // Name labels for favorite fish
+    for (const fish of sortedFish) {
+      if (fish.is_favorite && fish.custom_name) {
+        this.ctx.save();
+        this.ctx.font = `${9 / this.vpZoom}px system-ui`;
+        this.ctx.textAlign = "center";
+        this.ctx.lineWidth = 2 / this.vpZoom;
+        this.ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        this.ctx.fillStyle = "rgba(255,255,255,0.85)";
+        this.ctx.strokeText(fish.custom_name, fish.x, fish.y - 14);
+        this.ctx.fillText(fish.custom_name, fish.x, fish.y - 14);
+        this.ctx.restore();
+      }
+    }
+
+    // Environmental event overlay
+    if (this.currentFrame.active_event) {
+      this.drawEventOverlay(this.currentFrame.active_event);
+    }
+
+    // Tap ripples
+    this.drawTapRipples();
 
     // Bubbles
     this.drawBubbles(this.currentFrame.bubbles);
@@ -300,21 +389,28 @@ export class CanvasRenderer {
   private drawBackground() {
     const { ctx, width, height, theme } = this;
     const wq = this.currentFrame?.water_quality ?? 1.0;
-
+    const db = this.dayBrightness;
     const hour = this.currentHour;
-    let dayBrightness = 1.0;
-    if (hour < 6 || hour > 20) dayBrightness = 0.7;
-    else if (hour < 8) dayBrightness = 0.7 + (hour - 6) / 2 * 0.3;
-    else if (hour > 18) dayBrightness = 1.0 - (hour - 18) / 2 * 0.3;
 
     // Water quality tint: pristine=themed, poor=greenish
     const greenShift = Math.max(0, (1.0 - wq) * 30);
-    const topR = Math.round(theme.topR * dayBrightness);
-    const topG = Math.round((theme.topG + greenShift) * dayBrightness);
-    const topB = Math.round((theme.topB - greenShift * 0.3) * dayBrightness);
-    const botR = Math.round(theme.botR * dayBrightness);
-    const botG = Math.round((theme.botG + greenShift * 0.5) * dayBrightness);
-    const botB = Math.round((theme.botB - greenShift * 0.2) * dayBrightness);
+    let topR = Math.round(theme.topR * db);
+    let topG = Math.round((theme.topG + greenShift) * db);
+    let topB = Math.round((theme.topB - greenShift * 0.3) * db);
+    let botR = Math.round(theme.botR * db);
+    let botG = Math.round((theme.botG + greenShift * 0.5) * db);
+    let botB = Math.round((theme.botB - greenShift * 0.2) * db);
+
+    // Dawn/dusk warm tint (05:00-07:00 and 18:00-20:00)
+    let warmTint = 0;
+    if (hour >= 5 && hour < 7) warmTint = 1.0 - Math.abs(hour - 6) / 1;
+    else if (hour >= 18 && hour < 20) warmTint = 1.0 - Math.abs(hour - 19) / 1;
+    if (warmTint > 0) {
+      topR = Math.min(255, topR + Math.round(warmTint * 40));
+      topG = Math.min(255, topG + Math.round(warmTint * 15));
+      // slightly reduce blue for warm cast
+      topB = Math.max(0, topB - Math.round(warmTint * 10));
+    }
 
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
     gradient.addColorStop(0, `rgb(${topR},${topG},${topB})`);
@@ -326,18 +422,32 @@ export class CanvasRenderer {
     const sandY = height - 35;
     const { sandR, sandG, sandB } = theme;
     const sandGrad = ctx.createLinearGradient(0, sandY, 0, height);
-    sandGrad.addColorStop(0, `rgba(${sandR},${sandG},${sandB},0.6)`);
-    sandGrad.addColorStop(0.3, `rgba(${Math.round(sandR * 0.88)},${Math.round(sandG * 0.87)},${Math.round(sandB * 0.86)},0.5)`);
-    sandGrad.addColorStop(1, `rgba(${Math.round(sandR * 0.72)},${Math.round(sandG * 0.70)},${Math.round(sandB * 0.70)},0.4)`);
+    sandGrad.addColorStop(0, `rgba(${sandR},${sandG},${sandB},${0.6 * db})`);
+    sandGrad.addColorStop(0.3, `rgba(${Math.round(sandR * 0.88)},${Math.round(sandG * 0.87)},${Math.round(sandB * 0.86)},${0.5 * db})`);
+    sandGrad.addColorStop(1, `rgba(${Math.round(sandR * 0.72)},${Math.round(sandG * 0.70)},${Math.round(sandB * 0.70)},${0.4 * db})`);
     ctx.fillStyle = sandGrad;
     ctx.fillRect(0, sandY, width, height - sandY);
   }
 
   private drawLightRays() {
     const { ctx, width, height, time, theme } = this;
-    if (this.currentHour < 6 || this.currentHour > 19) return; // No rays at night
+    if (this.dayBrightness < 0.5) return; // No rays at deep night
 
-    const { lightRayR: r, lightRayG: g, lightRayB: b, lightRayAlpha: a } = theme;
+    let { lightRayR: r, lightRayG: g, lightRayB: b, lightRayAlpha: a } = theme;
+    // Scale ray intensity with dayBrightness
+    a *= this.dayBrightness;
+
+    // Dawn/dusk: warm ray coloring
+    const hour = this.currentHour;
+    let warmFactor = 0;
+    if (hour >= 5 && hour < 7) warmFactor = 1.0 - Math.abs(hour - 6) / 1;
+    else if (hour >= 18 && hour < 20) warmFactor = 1.0 - Math.abs(hour - 19) / 1;
+    if (warmFactor > 0) {
+      r = Math.min(255, r + Math.round(warmFactor * 55));
+      g = Math.min(255, g + Math.round(warmFactor * 20));
+      b = Math.max(0, b - Math.round(warmFactor * 40));
+    }
+
     ctx.save();
     for (let i = 0; i < 3; i++) {
       const baseX = width * (0.2 + i * 0.3) + Math.sin(time * 0.0002 + i * 2) * 50;
@@ -364,7 +474,7 @@ export class CanvasRenderer {
     const { causticR: cr, causticG: cg, causticB: cb, causticAlpha: ca } = theme;
 
     ctx.save();
-    ctx.globalAlpha = ca;
+    ctx.globalAlpha = ca * this.dayBrightness;
     for (let i = 0; i < 8; i++) {
       const x = (i * 180 + Math.sin(time * 0.001 + i * 1.5) * 40) % (width + 100) - 50;
       const y = floorY + Math.cos(time * 0.0008 + i) * 10;
@@ -377,6 +487,75 @@ export class CanvasRenderer {
       ctx.fillRect(x - r, y - r, r * 2, r * 2);
     }
     ctx.restore();
+  }
+
+  private drawMoonGlow() {
+    const { ctx, width } = this;
+    // Pale radial gradient in upper-right corner
+    const nightIntensity = 1.0 - this.dayBrightness / 0.6; // 0 at dusk edge, ~1 at deep night
+    const mx = width * 0.82;
+    const my = 60;
+    const grad = ctx.createRadialGradient(mx, my, 5, mx, my, 120);
+    grad.addColorStop(0, `rgba(200,210,240,${0.12 * nightIntensity})`);
+    grad.addColorStop(0.3, `rgba(160,180,220,${0.06 * nightIntensity})`);
+    grad.addColorStop(1, `rgba(100,120,180,0)`);
+    ctx.save();
+    ctx.fillStyle = grad;
+    ctx.fillRect(mx - 120, my - 120, 240, 240);
+    // Moon disc
+    ctx.beginPath();
+    ctx.arc(mx, my, 12, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(220,225,240,${0.15 * nightIntensity})`;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  private drawStars() {
+    const { ctx, width, height, time } = this;
+    const nightIntensity = 1.0 - this.dayBrightness / 0.6;
+    ctx.save();
+    // 15 twinkling dots in upper portion of tank
+    for (let i = 0; i < 15; i++) {
+      // Deterministic positions based on index
+      const sx = ((i * 137.5 + 23) % width);
+      const sy = ((i * 97.3 + 11) % (height * 0.4));
+      const twinkle = 0.3 + Math.sin(time * 0.003 + i * 2.1) * 0.2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 1 + Math.sin(time * 0.002 + i * 3) * 0.3, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(200,210,240,${twinkle * nightIntensity})`;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private drawEggs(eggs: EggState[]) {
+    const { ctx, time } = this;
+    for (const egg of eggs) {
+      // Get genome hue for color from cache
+      const genome = this.genomeCache.get(egg.genome_id);
+      const hue = genome?.base_hue ?? 180;
+      const bob = Math.sin(time * 0.003 + egg.id * 1.7) * 1.5;
+
+      ctx.save();
+      ctx.translate(egg.x, egg.y + bob);
+      // Translucent oval
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 4, 5, 0, 0, Math.PI * 2);
+      ctx.fillStyle = `hsla(${hue}, 50%, 65%, 0.5)`;
+      ctx.fill();
+      ctx.strokeStyle = `hsla(${hue}, 40%, 50%, 0.3)`;
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      // Progress indicator — small inner dot that grows
+      if (egg.progress > 0.3) {
+        const dotR = 1 + egg.progress * 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, dotR, 0, Math.PI * 2);
+        ctx.fillStyle = `hsla(${hue}, 60%, 70%, ${0.3 + egg.progress * 0.3})`;
+        ctx.fill();
+      }
+      ctx.restore();
+    }
   }
 
   private drawFood(food: FoodState[]) {
@@ -436,7 +615,8 @@ export class CanvasRenderer {
 
     // Z-depth effects
     const z = fish.z;
-    const renderScale = 0.7 + z * 0.3;
+    const juvenileScale = fish.is_juvenile ? 0.6 : 1.0;
+    const renderScale = (0.7 + z * 0.3) * juvenileScale;
     const brightness = 0.7 + z * 0.3;
     const sizeIdx = z < 0.33 ? 0 : z < 0.66 ? 1 : 2;
 
@@ -473,6 +653,15 @@ export class CanvasRenderer {
     // Draw sprite centered
     ctx.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
 
+    // Juvenile shimmer overlay
+    if (fish.is_juvenile) {
+      const shimmer = 0.15 + Math.sin(time * 0.008 + fish.id * 3) * 0.1;
+      ctx.globalAlpha = shimmer;
+      ctx.fillStyle = "rgba(220,240,255,1)";
+      ctx.fillRect(-sprite.width / 2, -sprite.height / 2, sprite.width, sprite.height);
+      ctx.globalAlpha = brightness;
+    }
+
     // Disease green particle overlay
     if (fish.is_infected) {
       const pCount = 5;
@@ -489,6 +678,31 @@ export class CanvasRenderer {
     }
 
     ctx.restore();
+  }
+
+  private drawTapRipples() {
+    const { ctx, time } = this;
+    const maxAge = 1500; // 45 frames at 60fps ≈ 750ms, but we use ms
+    // Remove expired ripples
+    this.tapRipples = this.tapRipples.filter((r) => time - r.startTime < maxAge);
+
+    for (const ripple of this.tapRipples) {
+      const age = time - ripple.startTime;
+      const progress = age / maxAge;
+      ctx.save();
+      for (let ring = 0; ring < 3; ring++) {
+        const ringProgress = Math.max(0, progress - ring * 0.15);
+        if (ringProgress <= 0 || ringProgress > 1) continue;
+        const radius = ringProgress * 80;
+        const alpha = (1 - ringProgress) * 0.3;
+        ctx.beginPath();
+        ctx.arc(ripple.x, ripple.y, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(180,210,240,${alpha})`;
+        ctx.lineWidth = 1.5 * (1 - ringProgress);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
   private drawBubbles(bubbles: BubbleState[]) {
@@ -660,6 +874,93 @@ export class CanvasRenderer {
     return new Promise((resolve) => {
       this.canvas.toBlob((blob) => resolve(blob), "image/png");
     });
+  }
+
+  private drawEventOverlay(eventType: string) {
+    const { ctx, width, height, time } = this;
+    ctx.save();
+    switch (eventType) {
+      case "algae_bloom": {
+        // Green-tinted fullscreen overlay + floating green particles
+        ctx.fillStyle = "rgba(40,120,30,0.08)";
+        ctx.fillRect(0, 0, width, height);
+        ctx.globalAlpha = 0.3;
+        for (let i = 0; i < 20; i++) {
+          const px = (i * 157.3 + time * 0.008) % width;
+          const py = (i * 113.7 + time * 0.005 * (i % 2 === 0 ? 1 : -1)) % height;
+          ctx.beginPath();
+          ctx.arc(px, py, 2 + Math.sin(time * 0.003 + i) * 1, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(60,180,50,${0.4 + Math.sin(time * 0.004 + i * 2) * 0.2})`;
+          ctx.fill();
+        }
+        break;
+      }
+      case "cold_snap": {
+        // Blue tint + slower feeling particles
+        ctx.fillStyle = "rgba(100,150,220,0.06)";
+        ctx.fillRect(0, 0, width, height);
+        ctx.globalAlpha = 0.25;
+        for (let i = 0; i < 15; i++) {
+          const px = (i * 137.5 + time * 0.003) % width;
+          const py = (i * 97.3 + time * 0.002) % height;
+          ctx.beginPath();
+          ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(180,210,255,0.5)";
+          ctx.fill();
+        }
+        break;
+      }
+      case "heatwave": {
+        // Warm orange tint + heat shimmer lines
+        ctx.fillStyle = "rgba(200,120,40,0.05)";
+        ctx.fillRect(0, 0, width, height);
+        ctx.globalAlpha = 0.06;
+        ctx.strokeStyle = "rgba(255,160,60,0.3)";
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 5; i++) {
+          const y = height * (0.2 + i * 0.15);
+          ctx.beginPath();
+          for (let x = 0; x <= width; x += 8) {
+            const sy = y + Math.sin(x * 0.03 + time * 0.004 + i) * 3;
+            if (x === 0) ctx.moveTo(x, sy);
+            else ctx.lineTo(x, sy);
+          }
+          ctx.stroke();
+        }
+        break;
+      }
+      case "current_surge": {
+        // Animated horizontal lines
+        ctx.globalAlpha = 0.08;
+        ctx.strokeStyle = "rgba(150,200,255,0.4)";
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 8; i++) {
+          const y = (i * height / 8 + time * 0.3) % height;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(width, y + Math.sin(time * 0.002) * 5);
+          ctx.stroke();
+        }
+        break;
+      }
+      case "plankton_bloom": {
+        // Dense sparkling particles with golden tint
+        ctx.fillStyle = "rgba(200,180,80,0.04)";
+        ctx.fillRect(0, 0, width, height);
+        ctx.globalAlpha = 0.4;
+        for (let i = 0; i < 30; i++) {
+          const px = (i * 147.3 + time * 0.01 * (i % 3 === 0 ? 1 : -0.7)) % width;
+          const py = (i * 89.7 + time * 0.006 * (i % 2 === 0 ? 1 : -1)) % height;
+          const sparkle = 0.3 + Math.sin(time * 0.008 + i * 3.1) * 0.3;
+          ctx.beginPath();
+          ctx.arc(px, py, 1 + sparkle, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(240,220,120,${sparkle})`;
+          ctx.fill();
+        }
+        break;
+      }
+    }
+    ctx.restore();
   }
 
   private drawPauseOverlay() {

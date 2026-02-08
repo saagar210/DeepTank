@@ -1,5 +1,5 @@
 use crate::simulation::config::SimulationConfig;
-use crate::simulation::fish::Fish;
+use crate::simulation::fish::{BehaviorState, Fish};
 use crate::simulation::genome::{genome_distance, FishGenome};
 use noise::{NoiseFn, Perlin};
 
@@ -315,6 +315,66 @@ impl BoidsEngine {
                 let urgency = (me.hunger - 0.6) / 0.4; // 0..1
                 fx += (nearest_fx / nearest_dist) * urgency * my_genome.speed * config.base_max_speed;
                 fy += (nearest_fy / nearest_dist) * urgency * my_genome.speed * config.base_max_speed;
+            }
+        }
+
+        // Territory return force: steer back to territory center when outside
+        if let Some((tcx, tcy)) = me.territory_center {
+            let dx = tcx - me.x;
+            let dy = tcy - me.y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let radius = me.territory_radius;
+            if dist > radius * 0.7 {
+                // Proportional pull back toward center
+                let urgency = ((dist - radius * 0.7) / (radius * 0.3)).min(2.0);
+                fx += (dx / dist.max(0.01)) * urgency * config.base_max_speed * 0.5;
+                fy += (dy / dist.max(0.01)) * urgency * config.base_max_speed * 0.5;
+            }
+        }
+
+        // Hunting: chase force toward target
+        if me.behavior == BehaviorState::Hunting {
+            if let Some(target_id) = me.hunting_target {
+                if let Some(target) = fish.iter().find(|f| f.id == target_id && f.is_alive) {
+                    let dx = target.x - me.x;
+                    let dy = target.y - me.y;
+                    let dist = (dx * dx + dy * dy).sqrt().max(0.01);
+                    let chase_strength = my_genome.speed * config.base_max_speed * 1.5;
+                    fx += (dx / dist) * chase_strength;
+                    fy += (dy / dist) * chase_strength;
+                }
+            }
+        }
+
+        // Prey fleeing with school coordination: coordinated escape heading
+        if me.behavior == BehaviorState::Fleeing && me.fleeing_from.is_some() {
+            if my_genome.school_affinity > 0.6 {
+                // Nearby allies influence flee direction (average heading away from predator)
+                let mut flee_dx = 0.0_f32;
+                let mut flee_dy = 0.0_f32;
+                let mut flee_count = 0_u32;
+                if let Some(pred_id) = me.fleeing_from {
+                    if let Some(predator) = fish.iter().find(|f| f.id == pred_id) {
+                        for &j in &candidates {
+                            if j == fish_idx { continue; }
+                            let ally = &fish[j];
+                            if !ally.is_alive || ally.behavior != BehaviorState::Fleeing { continue; }
+                            let adx = ally.x - predator.x;
+                            let ady = ally.y - predator.y;
+                            let adist = (adx * adx + ady * ady).sqrt().max(0.01);
+                            flee_dx += adx / adist;
+                            flee_dy += ady / adist;
+                            flee_count += 1;
+                        }
+                        if flee_count > 0 {
+                            flee_dx /= flee_count as f32;
+                            flee_dy /= flee_count as f32;
+                            let coord_strength = my_genome.school_affinity * 0.5;
+                            fx += flee_dx * coord_strength * config.base_max_speed;
+                            fy += flee_dy * coord_strength * config.base_max_speed;
+                        }
+                    }
+                }
             }
         }
 

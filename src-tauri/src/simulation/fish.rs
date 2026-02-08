@@ -11,6 +11,7 @@ pub enum BehaviorState {
     Satiated,
     Courting,
     Resting,
+    Hunting,
     Dying,
 }
 
@@ -23,6 +24,7 @@ impl BehaviorState {
             Self::Satiated => "satiated",
             Self::Courting => "courting",
             Self::Resting => "resting",
+            Self::Hunting => "hunting",
             Self::Dying => "dying",
         }
     }
@@ -57,6 +59,26 @@ pub struct Fish {
     pub starvation_ticks: u32,
     pub fleeing_from: Option<u32>,
     pub killed_by_predator: bool,
+
+    // Juvenile stage
+    pub is_juvenile: bool,
+    pub juvenile_timer: u32,
+
+    // Stress (from glass taps)
+    pub stress: f32,
+    pub tap_flee_timer: u32,
+
+    // Hunting (predation overhaul)
+    pub hunting_target: Option<u32>,  // target fish id
+    pub hunting_timer: u32,
+
+    // Territory
+    pub territory_center: Option<(f32, f32)>,
+    pub territory_radius: f32,
+
+    // Naming & favorites
+    pub custom_name: Option<String>,
+    pub is_favorite: bool,
 
     // Disease
     pub is_infected: bool,
@@ -102,6 +124,16 @@ impl Fish {
             starvation_ticks: 0,
             fleeing_from: None,
             killed_by_predator: false,
+            is_juvenile: false,
+            juvenile_timer: 0,
+            stress: 0.0,
+            tap_flee_timer: 0,
+            hunting_target: None,
+            hunting_timer: 0,
+            territory_center: None,
+            territory_radius: 0.0,
+            custom_name: None,
+            is_favorite: false,
             is_infected: false,
             infection_timer: 0,
             recovery_timer: 0,
@@ -120,6 +152,7 @@ impl Fish {
             BehaviorState::Fleeing => 0.0,
             BehaviorState::Courting => 0.0,
             BehaviorState::Resting => 0.2,
+            BehaviorState::Hunting => 0.0,
             BehaviorState::Dying => 0.0,
             _ => 1.0,
         }
@@ -127,7 +160,8 @@ impl Fish {
 
     pub fn behavior_speed_multiplier(&self) -> f32 {
         match self.behavior {
-            BehaviorState::Fleeing => 1.3,
+            BehaviorState::Fleeing => 1.4,  // improved prey evasion (was 1.3)
+            BehaviorState::Hunting => 1.2,
             BehaviorState::Satiated => 0.7,
             BehaviorState::Resting => 0.3,
             BehaviorState::Dying => 0.4,
@@ -144,6 +178,7 @@ impl Fish {
         has_nearby_mate: Option<u32>,
         base_lifespan: u32,
         water_quality: f32,
+        time_of_day: f32,
     ) {
         let age_frac = self.age_fraction(genome, base_lifespan);
 
@@ -178,6 +213,29 @@ impl Fish {
             self.health -= 0.00005 * (1.0 + (1.0 - water_quality));
         }
 
+        // Juvenile growth
+        if self.is_juvenile {
+            self.juvenile_timer += 1;
+            if self.juvenile_timer >= config.juvenile_duration {
+                self.is_juvenile = false;
+            }
+        }
+
+        // Stress decay and damage
+        if self.stress > 0.0 {
+            self.stress = (self.stress - 0.001).max(0.0);
+        }
+        if self.stress > 0.5 {
+            self.health -= 0.0002;
+        }
+        // Tap flee timer countdown
+        if self.tap_flee_timer > 0 {
+            self.tap_flee_timer -= 1;
+            if self.tap_flee_timer == 0 && self.behavior == BehaviorState::Fleeing && self.fleeing_from.is_none() {
+                self.behavior = BehaviorState::Swimming;
+            }
+        }
+
         // Starvation tracking
         if self.hunger >= 1.0 {
             self.starvation_ticks += 1;
@@ -205,13 +263,24 @@ impl Fish {
                     self.is_alive = false;
                 }
             }
+            BehaviorState::Hunting => {
+                // Hunting state is managed by process_predation, not the behavior FSM.
+                // Only override: dying check above can interrupt hunting.
+            }
             BehaviorState::Swimming => {
+                let is_night = time_of_day >= 21.0 || time_of_day < 5.0;
+                let is_nocturnal = genome.boldness > 0.7;
                 if has_nearby_predator {
                     self.behavior = BehaviorState::Fleeing;
                 } else if self.hunger > 0.6 {
                     self.behavior = BehaviorState::Foraging;
                 } else if self.energy < 0.2 {
                     self.behavior = BehaviorState::Resting;
+                } else if is_night && !is_nocturnal && config.day_night_cycle {
+                    // Non-nocturnal fish rest at night (40% chance per tick when swimming)
+                    if self.age % 5 == 0 { // ~40% effective per second at 30Hz
+                        self.behavior = BehaviorState::Resting;
+                    }
                 }
             }
             BehaviorState::Foraging => {
@@ -288,6 +357,7 @@ impl Fish {
     ) -> bool {
         let age_frac = self.age_fraction(genome, base_lifespan);
         self.is_alive
+            && !self.is_juvenile
             && self.hunger < 0.4
             && age_frac > genome.maturity_age
             && age_frac < 0.85

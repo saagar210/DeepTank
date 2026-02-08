@@ -15,6 +15,10 @@ import { SpeciesGallery } from "./components/SpeciesGallery";
 import { AchievementPanel } from "./components/AchievementPanel";
 import { PhylogeneticTree } from "./components/PhylogeneticTree";
 import { ReplayControls } from "./components/ReplayControls";
+import { BreedingPanel } from "./components/BreedingPanel";
+import { NarrationTicker } from "./components/NarrationTicker";
+import { TankSwitcher } from "./components/TankSwitcher";
+import { ScenarioPanel } from "./components/ScenarioPanel";
 
 const defaultSettings = {
   separation_weight: 1.5,
@@ -26,6 +30,7 @@ const defaultSettings = {
   mutation_rate_large: 0.02,
   species_threshold: 2.5,
   day_night_cycle: true,
+  day_night_speed: 1.0,
   bubble_rate: 1.0,
   current_strength: 0.0,
   auto_feed_enabled: false,
@@ -38,6 +43,10 @@ const defaultSettings = {
   ambient_enabled: true,
   event_sounds_enabled: true,
   theme: "aquarium",
+  environmental_events_enabled: true,
+  event_frequency: 1.0,
+  territory_enabled: true,
+  territory_claim_radius: 60,
   disease_enabled: false,
   disease_infection_chance: 0.3,
   disease_spontaneous_chance: 0.00005,
@@ -66,14 +75,26 @@ function App() {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [achievementsOpen, setAchievementsOpen] = useState(false);
   const [replayOpen, setReplayOpen] = useState(false);
+  const [scenarioOpen, setScenarioOpen] = useState(false);
+  const [widgetMode, setWidgetMode] = useState(false);
   const [lineageGenomeId, setLineageGenomeId] = useState<number | null>(null);
+  const [breedingMode, setBreedingMode] = useState(false);
+  const [breedFishA, setBreedFishA] = useState<{ id: number; genomeId: number } | null>(null);
+  const [breedFishB, setBreedFishB] = useState<{ id: number; genomeId: number } | null>(null);
   const toastId = useRef(0);
   const lastUiUpdate = useRef(0);
   const pendingGenomes = useRef(new Set<number>());
+  const lastActiveEvent = useRef<string | null>(null);
+  const lowDiversityWarned = useRef(false);
+  const [narrationText, setNarrationText] = useState<{ text: string; key: number } | null>(null);
+  const narrationKey = useRef(0);
 
   const addToast = useCallback((message: string, type: Toast["type"] = "info") => {
     const id = ++toastId.current;
-    setToasts((t) => [...t, { id, message, type, timestamp: Date.now() }]);
+    setToasts((t) => {
+      const next = [...t, { id, message, type, timestamp: Date.now() }];
+      return next.length > 10 ? next.slice(-10) : next;
+    });
     setTimeout(() => setToasts((t) => t.filter((toast) => toast.id !== id)), 5000);
   }, []);
 
@@ -91,7 +112,7 @@ function App() {
 
     const handleResize = () => {
       renderer.resize();
-      invoke("update_tank_size", { width: window.innerWidth, height: window.innerHeight });
+      invoke("update_tank_size", { width: window.innerWidth, height: window.innerHeight }).catch(() => {});
     };
     window.addEventListener("resize", handleResize);
     handleResize();
@@ -216,7 +237,43 @@ function App() {
           audioRef.current?.playBirth();
         } else if ("Death" in ev) {
           audioRef.current?.playDeath();
+          const d = ev.Death as { fish_id: number; cause: string; custom_name?: string; is_favorite?: boolean };
+          if (d.custom_name || d.is_favorite) {
+            const name = d.custom_name || `Fish #${d.fish_id}`;
+            const causeMap: Record<string, string> = {
+              OldAge: "old age", Starvation: "starvation", PoorWater: "poor water", Predation: "predation",
+            };
+            addToast(`${name} has died (${causeMap[d.cause] ?? d.cause})`, "danger");
+          }
         }
+      }
+
+      // Environmental event banner
+      const currentEvent = f.active_event ?? null;
+      if (currentEvent !== lastActiveEvent.current) {
+        if (currentEvent) {
+          const eventNames: Record<string, string> = {
+            algae_bloom: "Algae Bloom",
+            cold_snap: "Cold Snap",
+            heatwave: "Heatwave",
+            current_surge: "Current Surge",
+            plankton_bloom: "Plankton Bloom",
+          };
+          addToast(`Environmental event: ${eventNames[currentEvent] ?? currentEvent}`, "warning");
+        } else if (lastActiveEvent.current) {
+          addToast("Environmental event has ended", "info");
+        }
+        lastActiveEvent.current = currentEvent;
+      }
+
+      // Genetic diversity warning (check every ~300 ticks)
+      if (f.tick % 300 === 0 && f.genetic_diversity < 0.3 && f.population > 5) {
+        if (!lowDiversityWarned.current) {
+          addToast("Genetic diversity is critically low!", "danger");
+          lowDiversityWarned.current = true;
+        }
+      } else if (f.genetic_diversity >= 0.3) {
+        lowDiversityWarned.current = false;
       }
 
       // Cache genomes only for fish we haven't seen yet
@@ -240,9 +297,15 @@ function App() {
       addToast(`Achievement unlocked: ${event.payload}`, "success");
     });
 
+    // Listen for AI narration
+    const unlistenNarr = listen<string>("narration", (event) => {
+      setNarrationText({ text: event.payload, key: ++narrationKey.current });
+    });
+
     return () => {
       unlisten.then((fn) => fn());
       unlistenAch.then((fn) => fn());
+      unlistenNarr.then((fn) => fn());
     };
   }, [addToast]);
 
@@ -290,31 +353,71 @@ function App() {
       }
 
       const clickedFish = rendererRef.current?.findFishAt(x, y);
+      if (clickedFish && breedingMode) {
+        const detail = await invoke<FishDetail | null>("get_fish_detail", { fishId: clickedFish.id }).catch(() => null);
+        if (detail) {
+          if (!breedFishA) {
+            setBreedFishA({ id: detail.id, genomeId: detail.genome_id });
+          } else if (!breedFishB && detail.id !== breedFishA.id) {
+            setBreedFishB({ id: detail.id, genomeId: detail.genome_id });
+          }
+          setSelectedFish(detail);
+          await invoke("select_fish", { id: clickedFish.id }).catch(() => {});
+        } else {
+          setSelectedFish(null);
+        }
+        return;
+      }
       if (clickedFish) {
-        const detail = await invoke<FishDetail | null>("get_fish_detail", { fishId: clickedFish.id });
+        const detail = await invoke<FishDetail | null>("get_fish_detail", { fishId: clickedFish.id }).catch(() => null);
         setSelectedFish(detail);
-        await invoke("select_fish", { id: clickedFish.id });
+        await invoke("select_fish", { id: clickedFish.id }).catch(() => {});
       } else if (selectedFish) {
-        // Click empty space while fish selected = deselect
         setSelectedFish(null);
-        await invoke("select_fish", { id: null });
+        await invoke("select_fish", { id: null }).catch(() => {});
       } else {
         // Click empty space with nothing selected = drop food
         await invoke("feed", { x: tank.x, y: tank.y, foodType });
         audioRef.current?.playFeed();
       }
     },
-    [feedMode, selectedFish, decorationMode, decorationType, foodType],
+    [feedMode, selectedFish, decorationMode, decorationType, foodType, breedingMode, breedFishA, breedFishB],
+  );
+
+  // Double-click on empty space = tap the glass
+  const handleCanvasDoubleClick = useCallback(
+    async (e: React.MouseEvent) => {
+      if (widgetMode) {
+        setWidgetMode(false);
+        rendererRef.current?.setWidgetMode(false);
+        invoke("toggle_widget_mode", { enabled: false }).catch(() => {});
+        return;
+      }
+      if (feedMode || decorationMode) return;
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const clickedFish = rendererRef.current?.findFishAt(x, y);
+      if (clickedFish) return; // Don't tap if clicking a fish
+      const tank = rendererRef.current?.screenToTank(x, y) ?? { x, y };
+      await invoke("tap_glass", { x: tank.x, y: tank.y }).catch(() => {});
+      rendererRef.current?.addTapRipple(tank.x, tank.y);
+      audioRef.current?.playTap();
+    },
+    [feedMode, decorationMode, widgetMode],
   );
 
   const handlePauseToggle = useCallback(async () => {
-    if (paused) {
-      await invoke("resume");
-      setPaused(false);
-    } else {
-      await invoke("pause");
-      setPaused(true);
-    }
+    try {
+      if (paused) {
+        await invoke("resume");
+        setPaused(false);
+      } else {
+        await invoke("pause");
+        setPaused(true);
+      }
+    } catch { /* prevent state desync on invoke failure */ }
   }, [paused]);
 
   const handleSpeedChange = useCallback(async (mult: number) => {
@@ -354,19 +457,18 @@ function App() {
       switch (e.key) {
         case " ":
           e.preventDefault();
-          if (paused) {
-            await invoke("resume");
-            setPaused(false);
-          } else {
-            await invoke("pause");
-            setPaused(true);
-          }
+          handlePauseToggle();
           break;
         case "f":
         case "F":
           setFeedMode((m) => !m);
           break;
         case "Escape":
+          if (widgetMode) {
+            setWidgetMode(false);
+            rendererRef.current?.setWidgetMode(false);
+            invoke("toggle_widget_mode", { enabled: false }).catch(() => {});
+          }
           setSelectedFish(null);
           setFeedMode(false);
           setStatsOpen(false);
@@ -374,24 +476,21 @@ function App() {
           setGalleryOpen(false);
           setAchievementsOpen(false);
           setReplayOpen(false);
+          setScenarioOpen(false);
           setLineageGenomeId(null);
-          await invoke("select_fish", { id: null });
+          invoke("select_fish", { id: null }).catch(() => {});
           break;
         case "1":
-          await invoke("set_speed", { multiplier: 1.0 });
-          setSpeed(1);
+          handleSpeedChange(1);
           break;
         case "2":
-          await invoke("set_speed", { multiplier: 2.0 });
-          setSpeed(2);
+          handleSpeedChange(2);
           break;
         case "3":
-          await invoke("set_speed", { multiplier: 4.0 });
-          setSpeed(4);
+          handleSpeedChange(4);
           break;
         case "4":
-          await invoke("set_speed", { multiplier: 0.5 });
-          setSpeed(0.5);
+          handleSpeedChange(0.5);
           break;
         case "m":
         case "M":
@@ -408,6 +507,13 @@ function App() {
         case "P":
           if (!e.metaKey && !e.ctrlKey) handleScreenshot();
           break;
+        case "b":
+        case "B":
+          setBreedingMode((m) => {
+            if (m) { setBreedFishA(null); setBreedFishB(null); }
+            return !m;
+          });
+          break;
         case "0":
           rendererRef.current?.resetViewport();
           break;
@@ -415,7 +521,7 @@ function App() {
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [paused, handleStepForward, handleScreenshot]);
+  }, [paused, widgetMode, handlePauseToggle, handleSpeedChange, handleStepForward, handleScreenshot]);
 
   const handleSettingUpdate = useCallback((key: string, value: number | boolean | string) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
@@ -433,88 +539,131 @@ function App() {
       <canvas
         ref={canvasRef}
         onClick={handleCanvasClick}
+        onDoubleClick={handleCanvasDoubleClick}
         onMouseMove={(e) => {
           const rect = canvasRef.current?.getBoundingClientRect();
           if (!rect) return;
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
           rendererRef.current?.updateMousePosition(x, y);
+          // Set cursor imperatively — React state doesn't track hoveredFishId
+          if (canvasRef.current && !decorationMode && !feedMode) {
+            canvasRef.current.style.cursor = rendererRef.current?.getHoveredFishId() ? "pointer" : "default";
+          }
         }}
         style={{
           display: "block",
           width: "100%",
           height: "100%",
-          cursor: decorationMode ? "copy" : feedMode ? "crosshair" : rendererRef.current?.getHoveredFishId() ? "pointer" : "default",
+          cursor: decorationMode ? "copy" : feedMode ? "crosshair" : "default",
         }}
       />
 
-      <TopBar
-        frame={frame}
-        onStatsToggle={() => setStatsOpen((o) => !o)}
-        onSettingsToggle={() => setSettingsOpen((o) => !o)}
-        onDecorateToggle={() => setDecorationMode((m) => !m)}
-        onGalleryToggle={() => setGalleryOpen((o) => !o)}
-        onAchievementsToggle={() => setAchievementsOpen((o) => !o)}
-        onReplayToggle={() => setReplayOpen((o) => !o)}
-      />
+      {!widgetMode && (
+        <>
+          <TankSwitcher />
 
-      <Toolbar
-        paused={paused}
-        speed={speed}
-        feedMode={feedMode}
-        muted={muted}
-        onPauseToggle={handlePauseToggle}
-        onSpeedChange={handleSpeedChange}
-        onFeedToggle={() => setFeedMode((m) => !m)}
-        onMuteToggle={() => setMuted((m) => !m)}
-        onStepForward={handleStepForward}
-        onScreenshot={handleScreenshot}
-        foodType={foodType}
-        onFoodTypeChange={setFoodType}
-      />
+          <TopBar
+            frame={frame}
+            onStatsToggle={() => setStatsOpen((o) => !o)}
+            onSettingsToggle={() => setSettingsOpen((o) => !o)}
+            onDecorateToggle={() => setDecorationMode((m) => !m)}
+            onGalleryToggle={() => setGalleryOpen((o) => !o)}
+            onAchievementsToggle={() => setAchievementsOpen((o) => !o)}
+            onReplayToggle={() => setReplayOpen((o) => !o)}
+            onScenarioToggle={() => setScenarioOpen((o) => !o)}
+            onWidgetToggle={() => {
+              setWidgetMode(true);
+              rendererRef.current?.setWidgetMode(true);
+              invoke("toggle_widget_mode", { enabled: true }).catch(() => {});
+            }}
+          />
 
-      {selectedFish && (
-        <Inspector
-          fish={selectedFish}
-          onClose={() => setSelectedFish(null)}
-          onViewLineage={(genomeId) => setLineageGenomeId(genomeId)}
-        />
+          <NarrationTicker text={narrationText?.text ?? null} key={narrationText?.key ?? 0} />
+
+          <Toolbar
+            paused={paused}
+            speed={speed}
+            feedMode={feedMode}
+            muted={muted}
+            onPauseToggle={handlePauseToggle}
+            onSpeedChange={handleSpeedChange}
+            onFeedToggle={() => setFeedMode((m) => !m)}
+            onMuteToggle={() => setMuted((m) => !m)}
+            onStepForward={handleStepForward}
+            onScreenshot={handleScreenshot}
+            foodType={foodType}
+            onFoodTypeChange={setFoodType}
+            breedingMode={breedingMode}
+            onBreedToggle={() => {
+              setBreedingMode((m) => {
+                if (m) { setBreedFishA(null); setBreedFishB(null); }
+                return !m;
+              });
+            }}
+          />
+
+          {selectedFish && (
+            <Inspector
+              fish={selectedFish}
+              onClose={() => setSelectedFish(null)}
+              onViewLineage={(genomeId) => setLineageGenomeId(genomeId)}
+              onFishUpdated={async () => {
+                const detail = await invoke<FishDetail | null>("get_fish_detail", { fishId: selectedFish.id }).catch(() => null);
+                if (detail) setSelectedFish(detail);
+              }}
+            />
+          )}
+
+          <StatsPanel open={statsOpen} onClose={() => setStatsOpen(false)} />
+          <SettingsPanel
+            open={settingsOpen}
+            onClose={() => setSettingsOpen(false)}
+            settings={settings}
+            onUpdate={handleSettingUpdate}
+          />
+
+          {decorationMode && (
+            <DecorationPalette
+              selectedType={decorationType}
+              onSelect={setDecorationType}
+              onClose={() => setDecorationMode(false)}
+            />
+          )}
+
+          <SpeciesGallery open={galleryOpen} onClose={() => setGalleryOpen(false)} />
+          <AchievementPanel open={achievementsOpen} onClose={() => setAchievementsOpen(false)} />
+
+          {lineageGenomeId !== null && (
+            <PhylogeneticTree
+              genomeId={lineageGenomeId}
+              onClose={() => setLineageGenomeId(null)}
+            />
+          )}
+
+          {replayOpen && (
+            <ReplayControls
+              onClose={() => setReplayOpen(false)}
+              onPauseSimulation={() => invoke("pause")}
+            />
+          )}
+
+          {breedingMode && (
+            <BreedingPanel
+              fishAId={breedFishA?.id ?? null}
+              fishBId={breedFishB?.id ?? null}
+              genomeAId={breedFishA?.genomeId ?? null}
+              genomeBId={breedFishB?.genomeId ?? null}
+              onClose={() => { setBreedingMode(false); setBreedFishA(null); setBreedFishB(null); }}
+              onBred={() => { addToast("Egg produced!", "success"); setBreedingMode(false); setBreedFishA(null); setBreedFishB(null); }}
+            />
+          )}
+
+          <ScenarioPanel open={scenarioOpen} onClose={() => setScenarioOpen(false)} />
+
+          <Toasts toasts={toasts} />
+        </>
       )}
-
-      <StatsPanel open={statsOpen} onClose={() => setStatsOpen(false)} />
-      <SettingsPanel
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        settings={settings}
-        onUpdate={handleSettingUpdate}
-      />
-
-      {decorationMode && (
-        <DecorationPalette
-          selectedType={decorationType}
-          onSelect={setDecorationType}
-          onClose={() => setDecorationMode(false)}
-        />
-      )}
-
-      <SpeciesGallery open={galleryOpen} onClose={() => setGalleryOpen(false)} />
-      <AchievementPanel open={achievementsOpen} onClose={() => setAchievementsOpen(false)} />
-
-      {lineageGenomeId !== null && (
-        <PhylogeneticTree
-          genomeId={lineageGenomeId}
-          onClose={() => setLineageGenomeId(null)}
-        />
-      )}
-
-      {replayOpen && (
-        <ReplayControls
-          onClose={() => setReplayOpen(false)}
-          onPauseSimulation={() => invoke("pause")}
-        />
-      )}
-
-      <Toasts toasts={toasts} />
     </div>
   );
 }

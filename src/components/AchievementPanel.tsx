@@ -42,7 +42,7 @@ export function AchievementPanel({ open, onClose }: Props) {
 
   const fetchData = useCallback(async () => {
     const data = await invoke<Achievement[]>("get_achievements").catch(() => []);
-    setAchievements(data as Achievement[]);
+    setAchievements(data);
   }, []);
 
   useEffect(() => {

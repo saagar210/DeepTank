@@ -13,6 +13,20 @@ export interface FishState {
   genome_id: number;
   energy: number;
   is_infected: boolean;
+  is_juvenile: boolean;
+  territory_cx?: number;
+  territory_cy?: number;
+  territory_r?: number;
+  custom_name?: string;
+  is_favorite?: boolean;
+}
+
+export interface EggState {
+  id: number;
+  x: number;
+  y: number;
+  genome_id: number;
+  progress: number;
 }
 
 export interface FoodState {
@@ -50,12 +64,16 @@ export interface FrameUpdate {
   fish: FishState[];
   food: FoodState[];
   bubbles: BubbleState[];
+  eggs: EggState[];
   decorations: DecorationState[];
   events: SimEvent[];
   water_quality: number;
   population: number;
   max_generation: number;
   species_count: number;
+  time_of_day: number;
+  active_event: string | null;
+  genetic_diversity: number;
 }
 
 export interface PatternGene {
@@ -93,6 +111,7 @@ export interface FishGenome {
   fertility: number;
   lifespan_factor: number;
   maturity_age: number;
+  disease_resistance: number;
 }
 
 export interface Species {
@@ -137,6 +156,8 @@ export interface FishDetail {
   meals_eaten: number;
   is_alive: boolean;
   is_infected: boolean;
+  custom_name: string | null;
+  is_favorite: boolean;
   genome: FishGenome;
   species_name: string | null;
 }

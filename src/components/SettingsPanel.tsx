@@ -14,6 +14,7 @@ interface Settings {
   species_threshold: number;
   // Environment
   day_night_cycle: boolean;
+  day_night_speed: number;
   bubble_rate: number;
   current_strength: number;
   // Auto-feeder
@@ -30,6 +31,12 @@ interface Settings {
   event_sounds_enabled: boolean;
   // Visual
   theme: string;
+  // Environmental Events
+  environmental_events_enabled: boolean;
+  event_frequency: number;
+  // Territory
+  territory_enabled: boolean;
+  territory_claim_radius: number;
   // Disease
   disease_enabled: boolean;
   disease_infection_chance: number;
@@ -263,12 +270,15 @@ export function SettingsPanel({ open, onClose, settings, onUpdate }: Props) {
           <div style={sectionStyle}>
             <div style={sectionTitleStyle}>Environment</div>
             <Toggle label="Day/Night cycle" value={settings.day_night_cycle} onChange={(v) => onUpdate("day_night_cycle", v)} />
+            {settings.day_night_cycle && (
+              <Slider label="Day/Night speed" value={settings.day_night_speed} min={0} max={10} step={0.5} onChange={(v) => onUpdate("day_night_speed", v)} />
+            )}
             <Slider label="Bubble rate" value={settings.bubble_rate} min={0} max={3} step={0.1} onChange={(v) => onUpdate("bubble_rate", v)} />
             <Slider label="Current strength" value={settings.current_strength} min={0} max={1} step={0.05} onChange={(v) => onUpdate("current_strength", v)} />
             <div style={{ marginTop: 12 }}>
               <div style={sectionTitleStyle}>Theme</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                {(["aquarium", "tropical", "deep_ocean", "freshwater"] as const).map((t) => (
+                {["aquarium", "tropical", "deep_ocean", "freshwater"].map((t) => (
                   <button
                     key={t}
                     onClick={() => onUpdate("theme", t)}
@@ -284,10 +294,45 @@ export function SettingsPanel({ open, onClose, settings, onUpdate }: Props) {
                       textTransform: "capitalize",
                     }}
                   >
-                    {t.replace("_", " ")}
+                    {t.replaceAll("_", " ")}
                   </button>
                 ))}
               </div>
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <div style={sectionTitleStyle}>Environmental Events</div>
+              <Toggle label="Enable events" value={settings.environmental_events_enabled} onChange={(v) => onUpdate("environmental_events_enabled", v)} />
+              {settings.environmental_events_enabled && (
+                <Slider label="Event frequency" value={settings.event_frequency} min={0.1} max={5} step={0.1} onChange={(v) => onUpdate("event_frequency", v)} />
+              )}
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                {["algae_bloom", "cold_snap", "heatwave", "current_surge", "plankton_bloom"].map((evt) => (
+                  <button
+                    key={evt}
+                    onClick={() => invoke("trigger_event", { eventType: evt }).catch(() => {})}
+                    style={{
+                      padding: "4px 8px",
+                      border: "1px solid rgba(255,255,255,0.15)",
+                      borderRadius: 4,
+                      background: "rgba(255,180,100,0.1)",
+                      color: "rgba(255,255,255,0.5)",
+                      fontSize: 10,
+                      cursor: "pointer",
+                      fontFamily: "system-ui",
+                      textTransform: "capitalize",
+                    }}
+                  >
+                    {evt.replaceAll("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <div style={sectionTitleStyle}>Territory</div>
+              <Toggle label="Enable territories" value={settings.territory_enabled} onChange={(v) => onUpdate("territory_enabled", v)} />
+              {settings.territory_enabled && (
+                <Slider label="Claim radius" value={settings.territory_claim_radius} min={30} max={120} step={5} onChange={(v) => onUpdate("territory_claim_radius", v)} />
+              )}
             </div>
             <div style={{ marginTop: 16 }}>
               <div style={sectionTitleStyle}>Disease</div>

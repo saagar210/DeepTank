@@ -3,7 +3,7 @@ import type { FrameUpdate } from "../types";
 
 const barStyle: React.CSSProperties = {
   position: "absolute",
-  top: 0,
+  top: 28,
   left: 0,
   right: 0,
   display: "flex",
@@ -44,9 +44,11 @@ interface Props {
   onGalleryToggle?: () => void;
   onAchievementsToggle?: () => void;
   onReplayToggle?: () => void;
+  onScenarioToggle?: () => void;
+  onWidgetToggle?: () => void;
 }
 
-export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsToggle, onDecorateToggle, onGalleryToggle, onAchievementsToggle, onReplayToggle }: Props) {
+export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsToggle, onDecorateToggle, onGalleryToggle, onAchievementsToggle, onReplayToggle, onScenarioToggle, onWidgetToggle }: Props) {
   const wq = frame?.water_quality ?? 1;
   const wqColor = wq > 0.6 ? "#4a4" : wq > 0.4 ? "#aa4" : "#a44";
   const wqPct = Math.round(wq * 100);
@@ -89,6 +91,38 @@ export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsTog
         </div>
         <span style={{ fontSize: 11, color: wqColor }}>{wqPct}%</span>
       </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={labelStyle}>Diversity</span>
+        {(() => {
+          const d = frame?.genetic_diversity ?? 0.5;
+          const dPct = Math.round(d * 100);
+          const dColor = d > 0.7 ? "#4a4" : d > 0.3 ? "#aa4" : "#a44";
+          return (
+            <>
+              <div
+                style={{
+                  width: 40,
+                  height: 8,
+                  background: "rgba(255,255,255,0.15)",
+                  borderRadius: 4,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    width: `${dPct}%`,
+                    height: "100%",
+                    background: dColor,
+                    borderRadius: 4,
+                    transition: "width 0.3s, background 0.3s",
+                  }}
+                />
+              </div>
+              <span style={{ fontSize: 11, color: dColor }}>{dPct}%</span>
+            </>
+          );
+        })()}
+      </div>
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
         {onGalleryToggle && (
           <button style={iconBtn} onClick={onGalleryToggle} title="Species Gallery">
@@ -105,6 +139,11 @@ export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsTog
             Replay
           </button>
         )}
+        {onScenarioToggle && (
+          <button style={iconBtn} onClick={onScenarioToggle} title="Guided Scenarios">
+            Scenarios
+          </button>
+        )}
         {onDecorateToggle && (
           <button style={iconBtn} onClick={onDecorateToggle} title="Decorations [D]">
             Decorate
@@ -116,6 +155,11 @@ export const TopBar = memo(function TopBar({ frame, onStatsToggle, onSettingsTog
         <button style={iconBtn} onClick={onSettingsToggle} title="Settings">
           Settings
         </button>
+        {onWidgetToggle && (
+          <button style={iconBtn} onClick={onWidgetToggle} title="Widget Mode">
+            Widget
+          </button>
+        )}
         <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginLeft: 4 }}>
           tick {frame?.tick ?? 0}
         </span>
