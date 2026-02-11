@@ -92,6 +92,8 @@ cd src-tauri && cargo test
 npm test
 ```
 
+> Linux note: if `cargo test` fails with `glib-2.0.pc` missing, install GLib development packages and `pkg-config` (for Debian/Ubuntu: `sudo apt install libglib2.0-dev pkg-config`).
+
 **Rust** — genome inheritance, fish behavior, boids physics, ecosystem dynamics, events, achievements, scenarios
 **Frontend** — type contracts, sprite cache management, audio engine safety
 
