@@ -3,6 +3,12 @@
  * Generates ambient underwater sounds and event-driven effects entirely with synthesis.
  */
 
+
+function normalizeVolume(value: number): number {
+  if (!Number.isFinite(value)) return 0.3;
+  return Math.min(1, Math.max(0, value));
+}
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
@@ -263,10 +269,15 @@ export class AudioEngine {
   }
 
   set masterVolume(v: number) {
-    this._masterVolume = v;
+    const normalizedVolume = normalizeVolume(v);
+    this._masterVolume = normalizedVolume;
     if (this.masterGain && !this._muted) {
-      this.masterGain.gain.value = v;
+      this.masterGain.gain.value = normalizedVolume;
     }
+  }
+
+  get masterVolume() {
+    return this._masterVolume;
   }
 
   set ambientEnabled(v: boolean) {

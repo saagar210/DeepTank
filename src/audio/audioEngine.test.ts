@@ -49,4 +49,26 @@ describe("AudioEngine (no AudioContext)", () => {
     expect(() => { engine.ambientEnabled = false; }).not.toThrow();
     expect(() => { engine.eventEnabled = false; }).not.toThrow();
   });
+
+
+  it("clamps masterVolume to valid range", () => {
+    const engine = new AudioEngine();
+
+    engine.masterVolume = -1;
+    expect(engine.masterVolume).toBe(0);
+
+    engine.masterVolume = 2;
+    expect(engine.masterVolume).toBe(1);
+  });
+
+  it("normalizes non-finite masterVolume values", () => {
+    const engine = new AudioEngine();
+
+    engine.masterVolume = Number.NaN;
+    expect(engine.masterVolume).toBe(0.3);
+
+    engine.masterVolume = Number.POSITIVE_INFINITY;
+    expect(engine.masterVolume).toBe(0.3);
+  });
+
 });
