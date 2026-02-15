@@ -84,18 +84,40 @@ npm run tauri build
 
 ### Test
 
+#### Frontend Tests (CI & Local)
 ```bash
-# Rust unit tests (80 tests across 7 modules)
-cd src-tauri && cargo test
-
-# Frontend tests (27 tests across 3 suites)
-npm test
+npm test                    # Run 29 frontend tests via Vitest
+npx tsc --noEmit           # Type checking
 ```
 
-> Linux note: if `cargo test` fails with `glib-2.0.pc` missing, install GLib development packages and `pkg-config` (for Debian/Ubuntu: `sudo apt install libglib2.0-dev pkg-config`).
+All pushes trigger automated testing via GitHub Actions:
+- **Test workflow** runs on every `push` and `pull_request`
+- Tests must pass before merging to main
+- See [Actions](https://github.com/saagar210/DeepTank/actions) for status
 
-**Rust** — genome inheritance, fish behavior, boids physics, ecosystem dynamics, events, achievements, scenarios
-**Frontend** — type contracts, sprite cache management, audio engine safety
+#### Rust Tests (Local Only)
+```bash
+cd src-tauri && cargo test  # Run 80+ Rust tests
+```
+
+> **Linux note:** If `cargo test` fails with `glib-2.0.pc` missing, install development packages:
+> ```bash
+> sudo apt install libglib2.0-dev pkg-config
+> ```
+> On macOS: `brew install pkg-config`
+
+#### Build Verification (CI)
+```bash
+npm run build              # Frontend production build
+npm run tauri build        # Desktop binary build (takes ~2-3 min)
+```
+
+The build workflow verifies both on every push — if it fails, the build is broken.
+
+**Test Coverage:**
+- **Frontend:** 29 tests (type safety, audio engine, sprite generation)
+- **Rust:** ~80 tests (genetics, physics, ecosystem, achievements)
+- **Type Safety:** TypeScript strict mode + Rust compiler
 
 ## Keyboard Shortcuts
 

@@ -1,14 +1,15 @@
 {
   "name": "deeptank",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "version": ".github/scripts/bump-version.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

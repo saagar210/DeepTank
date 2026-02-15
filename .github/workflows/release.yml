@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Only run on version tags (v1.0.0, v1.1.0, etc.)
+
+jobs:
+  build-and-release:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_pattern: 'src-tauri/target/release/bundle/appimage/*.AppImage'
+            asset_name: 'deeptank-linux-x64.AppImage'
+
+          - os: macos-latest
+            rust_target: x86_64-apple-darwin
+            artifact_pattern: 'src-tauri/target/release/bundle/dmg/*.dmg'
+            asset_name: 'deeptank-macos-x64.dmg'
+
+          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+            artifact_pattern: 'src-tauri/target/release/bundle/dmg/*.dmg'
+            asset_name: 'deeptank-macos-arm64.dmg'
+
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_pattern: 'src-tauri/target/release/bundle/msi/*.msi'
+            asset_name: 'deeptank-windows-x64.msi'
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.rust_target }}
+          override: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev pkg-config \
+            libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri App
+        run: npm run tauri build -- --target ${{ matrix.rust_target }}
+
+      - name: Find artifact
+        id: find-artifact
+        shell: bash
+        run: |
+          artifact=$(find . -path "${{ matrix.artifact_pattern }}" -type f | head -1)
+          if [ -z "$artifact" ]; then
+            echo "Error: Artifact not found matching pattern: ${{ matrix.artifact_pattern }}"
+            find . -name "*.AppImage" -o -name "*.dmg" -o -name "*.msi" 2>/dev/null
+            exit 1
+          fi
+          echo "artifact=$artifact" >> $GITHUB_OUTPUT
+          echo "Found artifact: $artifact"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ steps.find-artifact.outputs.artifact }}
+          body: |
+            # DeepTank ${{ github.ref_name }}
+
+            See [CHANGELOG.md](https://github.com/saagar210/DeepTank/blob/main/CHANGELOG.md) for details.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
