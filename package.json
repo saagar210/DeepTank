@@ -4,10 +4,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
+    "dev": "node ./node_modules/vite/bin/vite.js",
+    "dev:lean": "bash ./scripts/dev-lean.sh",
+    "build": "node ./node_modules/typescript/bin/tsc && node ./node_modules/vite/bin/vite.js build",
+    "preview": "node ./node_modules/vite/bin/vite.js preview",
+    "tauri": "bash ./scripts/tauri.sh",
+    "clean:heavy": "bash ./scripts/clean-heavy.sh",
+    "clean:local": "bash ./scripts/clean-local.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
