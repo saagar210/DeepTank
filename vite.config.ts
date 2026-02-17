@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is a nodejs global
+const cacheDir = process.env.VITE_CACHE_DIR;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
@@ -12,6 +14,8 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // 1.1 allow lean mode to redirect build cache to an ephemeral directory.
+  cacheDir: cacheDir || "node_modules/.vite",
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
